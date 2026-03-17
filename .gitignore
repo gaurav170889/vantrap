@@ -1,0 +1,27 @@
+# Environment variables
+.env
+services/.env
+
+# Dependencies
+node_modules/
+services/node_modules/
+
+# Logs
+*.log
+services/*.log
+dialer.log
+services/dialer.log
+
+# Temporary/Debug files
+*.txt
+trace.txt
+alltables.txt
+services/debug_output.txt
+services/test_output.txt
+services/db_info.txt
+
+# OS/Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
