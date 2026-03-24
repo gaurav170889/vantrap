@@ -14,22 +14,22 @@ function loadmodal($modulename){
  
  function ConnectDB()
 {	
+	// Load environment variables
+	require_once(__DIR__ . '/../config.php');
 	
-	$host = 'localhost';
-         $user = 'root';
-         $pass = 'root';
-         $db = 'addon3cx';
-         $connection = mysqli_connect($host,$user,$pass,$db); 
-		 
-		// Check connection
-		if (mysqli_connect_errno()) {
-			echo "Failed to connect to MySQL: " . mysqli_connect_error();
-			exit();
-			}
-         return $connection;
-     }
-
- function Generate3CXToken($pbxurl, $auth_method, $creds) {
+	$host = getenv('DB_HOST') ?: 'localhost';
+	$user = getenv('DB_USER');
+	$pass = getenv('DB_PASS');
+	$db = getenv('DB_NAME');
+	$connection = mysqli_connect($host,$user,$pass,$db); 
+	 
+	// Check connection
+	if (mysqli_connect_errno()) {
+		echo "Failed to connect to MySQL: " . mysqli_connect_error();
+		exit();
+		}
+	return $connection;
+}
     // Ensure HTTPS and handle custom ports
     $base_url = trim($pbxurl);
     if ($base_url && !preg_match("~^https?://~i", $base_url)) {

@@ -1,10 +1,14 @@
 <?php
-$servername='localhost';
-$username='u697766864_vantrap';
-$password='&Gi6hlDj=';
-$dbname = "u697766864_vantrapdb";
-$conn=mysqli_connect($servername,$username,$password,"$dbname");
+// Load environment variables
+require_once(__DIR__ . '/../config.php');
+
+$servername = getenv('DB_HOST') ?: 'localhost';
+$username = getenv('DB_USER');
+$password = getenv('DB_PASS');
+$dbname = getenv('DB_NAME');
+
+$conn = mysqli_connect($servername, $username, $password, $dbname);
 if(!$conn){
-   die('Could not Connect My Sql:' .mysql_error());
+   die('Could not Connect My Sql:' . mysqli_connect_error());
 }
 ?>
