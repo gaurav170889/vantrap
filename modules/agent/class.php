@@ -9,30 +9,38 @@ Class Agent{
       $this->modal = loadmodal("agent");
     }
 	public function index(){
-		include(INCLUDEPATH.'modules/common/agentheader.php');
-		include(INCLUDEPATH.'modules/common/navbar_1.php');		
-		
-		// Access Control
-		if(!isset($_SESSION['erole']) || ($_SESSION['erole'] != 'super_admin' && $_SESSION['erole'] != 'company_admin'))
-		{
-			echo "<script>window.location.href='".BASE_URL."?route=dashboard/index';</script>";
-			exit;
-		}
+		try {
+			include(INCLUDEPATH.'modules/common/agentheader.php');
+			include(INCLUDEPATH.'modules/common/navbar_1.php');		
+			
+			// Access Control
+			if(!isset($_SESSION['erole']) || ($_SESSION['erole'] != 'super_admin' && $_SESSION['erole'] != 'company_admin'))
+			{
+				echo "<script>window.location.href='".BASE_URL."?route=dashboard/index';</script>";
+				exit;
+			}
 
-		if(isset($_SESSION['erole']) && $_SESSION['erole'] == "uagent")
-		{
-			include(__DIR__ . "/view/notadmin.php");
+			if(isset($_SESSION['erole']) && $_SESSION['erole'] == "uagent")
+			{
+				include(__DIR__ . "/view/notadmin.php");
+			}
+			else
+			{
+				$company_id = $_SESSION['company_id'] ?? 0;
+				if (!$company_id) {
+					echo "<main class='content'><div class='container-fluid'><div class='alert alert-danger'>Error: No company_id in session. Please log in again.</div></div></main>";
+				} else {
+					$data = $this->modal->select("agent", $company_id);
+					$group = $this->modal->groupassoc("agentgroup");
+					$counter = 1;
+					include(__DIR__ . "/view/index.php");
+				}
+			}
+			include(INCLUDEPATH.'modules/common/agentfooter.php');
+		} catch (Exception $e) {
+			echo "<main class='content'><div class='container-fluid'><div class='alert alert-danger'>Error loading agent page: " . htmlspecialchars($e->getMessage()) . "</div></div></main>";
+			include(INCLUDEPATH.'modules/common/agentfooter.php');
 		}
-		else
-		{
-		$company_id = $_SESSION['company_id'] ?? 0;
-		$data = $this->modal->select("agent", $company_id);
-		$group = $this->modal->groupassoc("agentgroup");
-		$counter = 1;
-		include(__DIR__ . "/view/index.php");
-		}
-		include(INCLUDEPATH.'modules/common/agentfooter.php');
-		 
 	}		
 	//public function record($keywords,$pages)
 	/*public function record()
