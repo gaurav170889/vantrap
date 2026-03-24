@@ -30,6 +30,8 @@ function loadmodal($modulename){
 		}
 	return $connection;
 }
+
+function Generate3CXToken($pbxurl, $auth_method, $creds) {
     // Ensure HTTPS and handle custom ports
     $base_url = trim($pbxurl);
     if ($base_url && !preg_match("~^https?://~i", $base_url)) {
