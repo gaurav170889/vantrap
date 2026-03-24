@@ -7,6 +7,7 @@ Class Users{
 	public function index(){
 		include(INCLUDEPATH.'modules/common/header.php');
 		include(INCLUDEPATH.'modules/common/navbar_1.php');
+		-	$_SESSION['navurl'] = 'Users'; // For Navbar highlighting
 		
 		// Access Control
 		if(!isset($_SESSION['erole']) || ($_SESSION['erole'] != 'super_admin' && $_SESSION['erole'] != 'company_admin'))
