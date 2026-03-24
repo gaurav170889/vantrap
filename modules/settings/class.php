@@ -41,7 +41,7 @@ Class Settings{
             $filename = $_FILES['logo']['name'];
             $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
             if (in_array($ext, $allowed)) {
-                $uploadDir = 'asset/logos/';
+                $uploadDir = ROOT_PATH . '/asset/logos/';
                 if (!is_dir($uploadDir)) {
                     mkdir($uploadDir, 0777, true);
                 }
