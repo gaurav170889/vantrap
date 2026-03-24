@@ -61,7 +61,7 @@
 					</li>
                     
                     <?php if(isset($_SESSION['erole']) && $_SESSION['erole'] == 'super_admin'): ?>
-                    <li class="sidebar-item active Admindashboard">
+                    <li class="sidebar-item Admindashboard">
 						<a class="sidebar-link" href="<?php echo BASE_URL;?>?route=admindashboard/index">
 							<i class="align-middle" data-feather="monitor"></i> <span class="align-middle">Admin Dashboard</span>
 						</a>

@@ -19,24 +19,19 @@ Class Agent{
 			exit;
 		}
 
-		if($_SESSION['role']== "uagent")
+		if(isset($_SESSION['erole']) && $_SESSION['erole'] == "uagent")
 		{
-			//$qagent = $this->getagent();
-			
-			include("view/notadmin.php");
+			include(__DIR__ . "/view/notadmin.php");
 		}
 		else
 		{
-		//$page = (isset($_GET['page']) && is_numeric($_GET['page']) ) ? $_GET['page'] : 1;
 		$company_id = $_SESSION['company_id'] ?? 0;
 		$data = $this->modal->select("agent", $company_id);
 		$group = $this->modal->groupassoc("agentgroup");
-		//print_r($group);
 		$counter = 1;
-		include("view/index.php");
-		//$this->record();
+		include(__DIR__ . "/view/index.php");
 		}
-		include('modules/common/agentfooter.php');
+		include(INCLUDEPATH.'modules/common/agentfooter.php');
 		 
 	}		
 	//public function record($keywords,$pages)
