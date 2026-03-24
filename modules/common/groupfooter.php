@@ -13,11 +13,8 @@
 <script type="text/javascript">
 $(document).ready(function (){
 		var navclass= "<?php echo $_SESSION['navurl']; ?>";
-		var check = $('.navul li.active').attr('class').split(' ')[1];;
-		if(check!==null)
-		{
-			//alert(check);
-			$('.'+check).removeClass('active');
+		$('.navul li.active').removeClass('active');
+		if(navclass) {
 			$('.'+navclass).addClass('active');
 		}
 		$('#sidebarCollapse').on('click', function () {

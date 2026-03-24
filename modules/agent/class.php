@@ -10,9 +10,9 @@ Class Agent{
     }
 	public function index(){
 		try {
+			$_SESSION['navurl'] = 'Agent';
 			include(INCLUDEPATH.'modules/common/agentheader.php');
 			include(INCLUDEPATH.'modules/common/navbar_1.php');		
-			-		$_SESSION['navurl'] = 'Agent'; // For Navbar highlighting
 			
 			// Access Control
 			if(!isset($_SESSION['erole']) || ($_SESSION['erole'] != 'super_admin' && $_SESSION['erole'] != 'company_admin'))
