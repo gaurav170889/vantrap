@@ -65,6 +65,7 @@
                 <option value="Queue">Queue</option>
                 <option value="Extension">Extension</option>
                 <option value="IVR">IVR</option>
+            <option value="DID">DID</option>
             </select>
         </div>
 
@@ -265,6 +266,8 @@ $(document).ready(function() {
     
     const isSuperAdmin = <?php echo (isset($_SESSION['erole']) && $_SESSION['erole'] == 'super_admin') ? 'true' : 'false'; ?>;
     const QUEUE_WEBHOOK_URL = "<?php echo QUEUE_WEBHOOK_URL; ?>";
+	const outboundPrefixEnabledDefault = <?php echo !empty($outboundPrefixEnabled) ? 'true' : 'false'; ?>;
+	const outboundPrefixByCompany = <?php echo json_encode($outboundPrefixByCompany ?? [], JSON_UNESCAPED_SLASHES); ?>;
     
     const columns = [
           { data: 'id' },
@@ -354,7 +357,7 @@ $(document).ready(function() {
       $('input[name="weekdays[]"]').prop('checked', false);
       
       // Trigger change to update UI state based on default value
-      $('#dialerMode').trigger('change');
+	  applyRouteTypeRules($('#routeType').val());
       
       $('#addCampaignModal').modal('show');
     });
@@ -377,8 +380,9 @@ $(document).ready(function() {
       }
 
       // New Fields Population
-      $('#dialerMode').val(rowData.dialer_mode || 'Power Dialer').trigger('change');
-      $('#routeType').val(rowData.route_type || 'Queue');
+	  const targetRouteType = rowData.route_type || 'Queue';
+	  $('#dialerMode').val(rowData.dialer_mode || 'Power Dialer');
+	  applyRouteTypeRules(targetRouteType);
       $('#concurrentCalls').val(rowData.concurrent_calls || 1);
     
       // Handle weekdays
@@ -603,39 +607,61 @@ $(document).ready(function() {
         });
     });
 
-    // --- Dialer Mode Logic ---
-    $('#dialerMode').on('change', function() {
-        const mode = $(this).val();
-        const routeTypeSelect = $('#routeType');
-      const concurrentCallsLabel = $('#concurrentCallsLabel');
-      const concurrentCallsHelp = $('#concurrentCallsHelp');
-        
-        // Reset all first
-        routeTypeSelect.find('option').prop('disabled', false).prop('hidden', false).css('display', '');
+  function isOutboundPrefixEnabledForSelection() {
+    if (isSuperAdmin) {
+      const companyId = $('#companyId').val();
+      if (!companyId) {
+        return false;
+      }
+      return !!outboundPrefixByCompany[companyId];
+    }
 
-        if (mode === 'Predictive Dialer') {
-          concurrentCallsLabel.text('Concurrent Calls');
-          concurrentCallsHelp.text('Predictive Dialer: max simultaneous calls to place for this campaign.');
+    return outboundPrefixEnabledDefault;
+  }
 
-            // Predictive: Only Queue
-            routeTypeSelect.find('option[value="Extension"]').prop('disabled', true).prop('hidden', true).css('display', 'none');
-            routeTypeSelect.find('option[value="IVR"]').prop('disabled', true).prop('hidden', true).css('display', 'none');
-            
-            // Force select Queue
-            routeTypeSelect.val('Queue');
-        } else {
-             concurrentCallsLabel.text('Minimum Free Channels');
-             concurrentCallsHelp.text('Power Dialer: keep at least this many channels free before dialing a new call.');
+  function applyRouteTypeRules(preferredRouteType) {
+    const mode = $('#dialerMode').val();
+    const routeTypeSelect = $('#routeType');
+    const concurrentCallsLabel = $('#concurrentCallsLabel');
+    const concurrentCallsHelp = $('#concurrentCallsHelp');
+    const outboundEnabled = isOutboundPrefixEnabledForSelection();
 
-             // Power Dialer: Only Extension and IVR (Hide Queue)
-             routeTypeSelect.find('option[value="Queue"]').prop('disabled', true).prop('hidden', true).css('display', 'none');
-             
-             // If Queue was selected (or nothing), switch to Extension default
-             if (routeTypeSelect.val() === 'Queue' || !routeTypeSelect.val()) {
-                 routeTypeSelect.val('Extension');
-             }
-        }
-    });
+    routeTypeSelect.find('option').prop('disabled', false).prop('hidden', false).css('display', '');
+
+    if (mode === 'Predictive Dialer') {
+      concurrentCallsLabel.text('Concurrent Calls');
+      concurrentCallsHelp.text('Predictive Dialer: max simultaneous calls to place for this campaign.');
+
+      routeTypeSelect.find('option[value="Extension"]').prop('disabled', true).prop('hidden', true).css('display', 'none');
+      routeTypeSelect.find('option[value="IVR"]').prop('disabled', true).prop('hidden', true).css('display', 'none');
+      routeTypeSelect.find('option[value="DID"]').prop('disabled', true).prop('hidden', true).css('display', 'none');
+      routeTypeSelect.val('Queue');
+    } else {
+      concurrentCallsLabel.text('Minimum Free Channels');
+      concurrentCallsHelp.text('Power Dialer: keep at least this many channels free before dialing a new call.');
+
+      routeTypeSelect.find('option[value="Queue"]').prop('disabled', true).prop('hidden', true).css('display', 'none');
+      if (!outboundEnabled) {
+        routeTypeSelect.find('option[value="DID"]').prop('disabled', true).prop('hidden', true).css('display', 'none');
+      }
+
+      if (preferredRouteType && routeTypeSelect.find('option[value="' + preferredRouteType + '"]:enabled').length > 0) {
+        routeTypeSelect.val(preferredRouteType);
+      } else if (routeTypeSelect.find('option:selected:enabled').length === 0 || routeTypeSelect.val() === 'Queue') {
+        routeTypeSelect.val('Extension');
+      }
+    }
+  }
+
+  $('#dialerMode').on('change', function() {
+    applyRouteTypeRules($('#routeType').val());
+  });
+
+  $('#companyId').on('change', function() {
+    applyRouteTypeRules($('#routeType').val());
+  });
+
+  applyRouteTypeRules($('#routeType').val());
 
 });
 </script>

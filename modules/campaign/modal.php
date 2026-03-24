@@ -6,8 +6,80 @@ Class Campaign_modal{
 	public function __construct()
 	{
 		$this->conn = ConnectDB();
-		
+        $this->ensureDidTables();
 	}
+
+    private function ensureDidTables()
+    {
+        $sql1 = "CREATE TABLE IF NOT EXISTS pbx_dids (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            company_id INT NOT NULL,
+            inbound_rule_id INT NOT NULL,
+            did VARCHAR(64) NOT NULL,
+            trunk VARCHAR(255) DEFAULT NULL,
+            rule_name VARCHAR(255) DEFAULT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_company_inbound_rule (company_id, inbound_rule_id),
+            KEY idx_company_did (company_id, did)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+
+        $sql2 = "CREATE TABLE IF NOT EXISTS campaign_outbound_rule (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            company_id INT NOT NULL,
+            campaign_id INT NOT NULL,
+            outbound_rule_id INT NOT NULL,
+            last_used_map_id INT DEFAULT NULL,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_company_campaign (company_id, campaign_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+
+        $sql3 = "CREATE TABLE IF NOT EXISTS campaign_did_map (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            company_id INT NOT NULL,
+            campaign_id INT NOT NULL,
+            did_id INT NOT NULL,
+            sort_order INT NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_campaign_did (campaign_id, did_id),
+            KEY idx_company_campaign (company_id, campaign_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+
+        mysqli_query($this->conn, $sql1);
+        mysqli_query($this->conn, $sql2);
+        mysqli_query($this->conn, $sql3);
+    }
+
+    public function isOutboundPrefixEnabled($company_id)
+    {
+        $company_id = intval($company_id);
+        if ($company_id <= 0) {
+            return false;
+        }
+
+        $query = "SELECT outbound_prefix FROM pbxdetail WHERE company_id = $company_id LIMIT 1";
+        $result = mysqli_query($this->conn, $query);
+        if ($result && ($row = mysqli_fetch_assoc($result))) {
+            return isset($row['outbound_prefix']) && $row['outbound_prefix'] === 'Yes';
+        }
+
+        return false;
+    }
+
+    public function getOutboundPrefixByCompany()
+    {
+        $data = [];
+        $query = "SELECT company_id, outbound_prefix FROM pbxdetail";
+        $result = mysqli_query($this->conn, $query);
+        if ($result) {
+            while ($row = mysqli_fetch_assoc($result)) {
+                $cid = (int)$row['company_id'];
+                $data[$cid] = isset($row['outbound_prefix']) && $row['outbound_prefix'] === 'Yes';
+            }
+        }
+
+        return $data;
+    }
 	
 	public function htmlvalidation($form_data){
 		$form_data = trim( stripslashes( htmlspecialchars( $form_data ) ) );

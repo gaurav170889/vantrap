@@ -31,8 +31,13 @@ Class Campaign{
 	    //	$counter = 1;
 	    
 	    $companies = [];
+        $outboundPrefixEnabled = false;
+        $outboundPrefixByCompany = [];
         if (isset($_SESSION['erole']) && $_SESSION['erole'] == 'super_admin') {
             $companies = $this->modal->getCompanies();
+            $outboundPrefixByCompany = $this->modal->getOutboundPrefixByCompany();
+        } elseif (isset($_SESSION['company_id'])) {
+            $outboundPrefixEnabled = $this->modal->isOutboundPrefixEnabled((int)$_SESSION['company_id']);
         }
         
 		include("view/index.php");
