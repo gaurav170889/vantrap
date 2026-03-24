@@ -125,6 +125,7 @@
                             
                             <?php if(isset($show_outprefix) && $show_outprefix): ?>
                             <li class="sidebar-item Outprefix"><a class="sidebar-link" href="<?php echo NAVURL;?>outprefix/">Outprefix</a></li>
+							<li class="sidebar-item Did"><a class="sidebar-link" href="<?php echo NAVURL;?>did/">Did</a></li>
                             <?php endif; ?>
                             
                             <?php if(isset($_SESSION['erole']) && $_SESSION['erole'] == 'super_admin'): ?>
