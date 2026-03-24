@@ -185,7 +185,7 @@ $(document).ready(function() {
         var formData = new FormData(this);
         
         $.ajax({
-            url: 'settings/save',
+            url: '<?php echo BASE_URL; ?>?route=settings/save',
             type: 'POST',
             data: formData,
             dataType: 'json',
