@@ -501,7 +501,7 @@ Class Agent{
 
 	public function check()
 	{
-		include("view/check.php");
+		include(__DIR__ . "/view/check.php");
 	}
 		
 }

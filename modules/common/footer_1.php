@@ -188,7 +188,7 @@ $(document).ready(function (){
 			
 	function logout(){
 	if (confirm('Are you sure you want to logout?')){
-		window.location = "http://localhost/rateagent?type=logout";
+		window.location = "<?php echo LOGOUT; ?>?type=logout";
 		return true;
 		}else{
 			return false;

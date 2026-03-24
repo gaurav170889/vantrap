@@ -11,7 +11,7 @@ include("includes/functions.php");
 if(isset($_GET['type']))
 {
 	session_destroy();
-	header("Location: http://$ip/vantrap");
+	header("Location: ".LOGOUT);
 }
 require("modules/checkprivilege.php");
 
