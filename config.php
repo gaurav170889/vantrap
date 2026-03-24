@@ -12,4 +12,30 @@ if (file_exists(__DIR__ . '/.env')) {
         }
     }
 }
+
+if (!function_exists('app_env')) {
+    function app_env($key, $default = null) {
+        $value = getenv($key);
+        if ($value === false || $value === '') {
+            return $default;
+        }
+        return $value;
+    }
+}
+
+if (!function_exists('app_validate_db_env')) {
+    function app_validate_db_env() {
+        $required = array('DB_USER', 'DB_NAME');
+        $missing = array();
+
+        foreach ($required as $key) {
+            $value = app_env($key, null);
+            if ($value === null || $value === '') {
+                $missing[] = $key;
+            }
+        }
+
+        return $missing;
+    }
+}
 ?>

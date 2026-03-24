@@ -16,16 +16,21 @@ function loadmodal($modulename){
 {	
 	// Load environment variables
 	require_once(__DIR__ . '/../config.php');
+    $missing = app_validate_db_env();
+    if (!empty($missing)) {
+        echo "Database configuration is incomplete. Please check .env (missing: " . implode(', ', $missing) . ")";
+        exit();
+    }
 	
-	$host = getenv('DB_HOST') ?: 'localhost';
-	$user = getenv('DB_USER');
-	$pass = getenv('DB_PASS');
-	$db = getenv('DB_NAME');
+    $host = app_env('DB_HOST', 'localhost');
+    $user = app_env('DB_USER', '');
+    $pass = app_env('DB_PASS', '');
+    $db = app_env('DB_NAME', '');
 	$connection = mysqli_connect($host,$user,$pass,$db); 
 	 
 	// Check connection
 	if (mysqli_connect_errno()) {
-		echo "Failed to connect to MySQL: " . mysqli_connect_error();
+        echo "Failed to connect to MySQL. Please verify DB_* values in .env. Error: " . mysqli_connect_error();
 		exit();
 		}
 	return $connection;
