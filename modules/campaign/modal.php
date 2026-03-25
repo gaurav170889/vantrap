@@ -7,7 +7,16 @@ Class Campaign_modal{
 	{
 		$this->conn = ConnectDB();
         $this->ensureDidTables();
+        $this->ensureCampaignColumns();
 	}
+
+    private function ensureCampaignColumns()
+    {
+        $check = mysqli_query($this->conn, "SHOW COLUMNS FROM campaign LIKE 'dg_reception_number'");
+        if (!$check || mysqli_num_rows($check) === 0) {
+            mysqli_query($this->conn, "ALTER TABLE campaign ADD COLUMN dg_reception_number VARCHAR(32) NULL AFTER dn_number");
+        }
+    }
 
     private function ensureDidTables()
     {
@@ -147,7 +156,7 @@ Class Campaign_modal{
         return json_encode($data);
     }
 	
-	public function addCampaignSql($name, $routeto, $returncall, $weekdays, $starttime, $stoptime, $company_id, $created_by, $dialer_mode, $route_type, $concurrent_calls, $webhook_token = null, $dn_number = null) 
+    public function addCampaignSql($name, $routeto, $returncall, $weekdays, $starttime, $stoptime, $company_id, $created_by, $dialer_mode, $route_type, $concurrent_calls, $webhook_token = null, $dn_number = null, $dg_reception_number = null) 
 	{
          if (is_array($weekdays)) {
             $weekdays = json_encode($weekdays);
@@ -168,11 +177,12 @@ Class Campaign_modal{
         $concurrent_calls = $concurrent_calls !== '' ? intval($concurrent_calls) : 1;
         $webhook_token = $webhook_token ? "'" . mysqli_real_escape_string($this->conn, $webhook_token) . "'" : "NULL";
         $dn_number = $dn_number ? "'" . mysqli_real_escape_string($this->conn, $dn_number) . "'" : "NULL";
+        $dg_reception_number = $dg_reception_number ? "'" . mysqli_real_escape_string($this->conn, $dg_reception_number) . "'" : "NULL";
     
         // Final SQL query
         $query = "
-            INSERT INTO campaign (company_id, name, routeto, dn_number, returncall, weekdays, starttime, stoptime, created_by, dialer_mode, route_type, concurrent_calls, webhook_token)
-            VALUES ($company_id, '$name', '$routeto', $dn_number, $returncall, '$weekdays', $starttime, $stoptime, $created_by, $dialer_mode, $route_type, $concurrent_calls, $webhook_token)
+            INSERT INTO campaign (company_id, name, routeto, dn_number, dg_reception_number, returncall, weekdays, starttime, stoptime, created_by, dialer_mode, route_type, concurrent_calls, webhook_token)
+            VALUES ($company_id, '$name', '$routeto', $dn_number, $dg_reception_number, $returncall, '$weekdays', $starttime, $stoptime, $created_by, $dialer_mode, $route_type, $concurrent_calls, $webhook_token)
         ";
     
         $insert_fire = mysqli_query($this->conn, $query);

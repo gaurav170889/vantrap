@@ -92,6 +92,7 @@ Class Campaign{
 	    $name        = $_POST['name'] ?? '';
         $routeto     = $_POST['routeto'] ?? '';
         $dn_number   = $_POST['dn_number'] ?? '';
+    $dg_reception_number = trim($_POST['dg_reception_number'] ?? '');
         $returncall  = $_POST['returncall'] ?? '';
         $weekdays    = $_POST['weekdays'] ?? [];
         $starttime   = $_POST['starttime'] ?? '';
@@ -133,8 +134,18 @@ Class Campaign{
         if ($dialer_mode === 'Predictive Dialer') {
             $webhook_token = md5(uniqid(rand(), true));
         }
+
+        if ($dialer_mode !== 'Predictive Dialer') {
+            $dg_reception_number = '';
+        }
+
+        if ($dg_reception_number !== '' && !preg_match('/^[0-9]+$/', $dg_reception_number)) {
+            header('Content-Type: application/json');
+            echo json_encode(['success' => false, 'error' => 'DG Reception Number must be numeric.']);
+            return;
+        }
     
-        $result = $this->modal->addCampaignSql($name, $routeto, $returncall, $weekdays, $starttime, $stoptime, $company_id, $created_by, $dialer_mode, $route_type, $concurrent_calls, $webhook_token, $dn_number);
+        $result = $this->modal->addCampaignSql($name, $routeto, $returncall, $weekdays, $starttime, $stoptime, $company_id, $created_by, $dialer_mode, $route_type, $concurrent_calls, $webhook_token, $dn_number, $dg_reception_number);
     
         header('Content-Type: application/json');
         echo json_encode($result);
@@ -253,6 +264,7 @@ Class Campaign{
         $name = isset($_POST['name']) ? trim($_POST['name']) : '';
         $routeto = isset($_POST['routeto']) ? trim($_POST['routeto']) : '';
         $dn_number = isset($_POST['dn_number']) ? trim($_POST['dn_number']) : '';
+        $dg_reception_number = isset($_POST['dg_reception_number']) ? trim($_POST['dg_reception_number']) : '';
         $returncall = isset($_POST['returncall']) ? trim($_POST['returncall']) : '';
         $weekdays = isset($_POST['weekdays']) ? $_POST['weekdays'] : '[]';
         $starttime = isset($_POST['starttime']) ? $_POST['starttime'] : '';
@@ -284,6 +296,15 @@ Class Campaign{
         if ($dialer_mode === 'Predictive Dialer' && empty($webhook_token)) {
              $webhook_token = md5(uniqid(rand(), true));
         }
+
+        if ($dialer_mode !== 'Predictive Dialer') {
+            $dg_reception_number = '';
+        }
+
+        if ($dg_reception_number !== '' && !preg_match('/^[0-9]+$/', $dg_reception_number)) {
+            echo json_encode(['success' => false, 'error' => 'DG Reception Number must be numeric.']);
+            return;
+        }
         
         $updated_by = $_SESSION['zid'] ?? 0;
     
@@ -291,6 +312,7 @@ Class Campaign{
             'name' => $name,
             'routeto' => $routeto,
             'dn_number' => $dn_number,
+            'dg_reception_number' => $dg_reception_number,
             'returncall' => $returncall,
             'weekdays' => $weekdays, 
             'starttime' => $starttime,

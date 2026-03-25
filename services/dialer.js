@@ -476,7 +476,7 @@ async function makeCall({ pbxurl, token, destination, dialerDn }) {
     }
 }
 
-async function waitThenTransfer({ pbxurl, token, callid, destination, queueDn, dialerDn }) {
+async function waitThenTransfer({ pbxurl, token, callid, destination, transferDn, dialerDn }) {
     const deadline = Date.now() + 45000; // 45s Timeout
     log(`[Call ${callid}] Dialing ${destination} using Extension ${dialerDn}...`);
 
@@ -490,10 +490,10 @@ async function waitThenTransfer({ pbxurl, token, callid, destination, queueDn, d
             const p = list.find(x => String(x.callid) === String(callid) && x.status === 'Connected');
 
             if (p) {
-                log(`[Call ${callid}] Answered! Transferring to ${queueDn}`);
+                log(`[Call ${callid}] Answered! Transferring to ${transferDn}`);
                 await axios.post(
                     `${pbxurl}/callcontrol/${dialerDn}/participants/${p.id}/transferto`,
-                    { destination: queueDn },
+                    { destination: transferDn },
                     { headers: { Authorization: `Bearer ${token}` } }
                 );
                 return true;
@@ -614,6 +614,7 @@ async function spawnCallFlow(c, lead, queueDn, dialerDn) {
     try {
         const { pbxurl, token } = await getPbxTokenByCompany(c.company_id);
         const destination = lead.phone_e164 || lead.phone_raw;
+        const transferDn = String(c.dg_reception_number || queueDn || '').trim();
 
         if (String(c.outbound_prefix || '').toLowerCase() === 'yes') {
             try {
@@ -655,7 +656,7 @@ async function spawnCallFlow(c, lead, queueDn, dialerDn) {
         const callid = await makeCall({ pbxurl, token, destination, dialerDn });
 
         // Monitor Answer
-        const connected = await waitThenTransfer({ pbxurl, token, callid, destination, queueDn, dialerDn });
+        const connected = await waitThenTransfer({ pbxurl, token, callid, destination, transferDn, dialerDn });
 
         if (connected) {
             await logCallAttemptV2(c.company_id, c.id, lead.id, callid, 'ANSWERED', null, null, lead.attempts_used + 1);
@@ -705,7 +706,7 @@ async function tick() {
         }
 
         const [campaigns] = await db.execute(
-            `SELECT c.id, c.company_id, c.routeto, c.dn_number, c.dialer_mode, c.concurrent_calls,
+            `SELECT c.id, c.company_id, c.routeto, c.dn_number, c.dg_reception_number, c.dialer_mode, c.concurrent_calls,
                     COALESCE(p.outbound_prefix, 'No') AS outbound_prefix
              FROM campaign c
              LEFT JOIN pbxdetail p ON p.company_id = c.company_id

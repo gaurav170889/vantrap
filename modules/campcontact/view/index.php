@@ -73,12 +73,81 @@
   </div>
 </div>
 
+<style>
+  .contact-filter-panel {
+    background: linear-gradient(135deg, #f8fbff 0%, #eef5ff 100%);
+    border: 1px solid #d8e7ff;
+    border-radius: 10px;
+    padding: 16px;
+    box-shadow: 0 2px 8px rgba(15, 62, 136, 0.08);
+  }
+  .contact-filter-title {
+    font-size: 14px;
+    letter-spacing: 0.5px;
+    color: #144c9e;
+    margin-bottom: 10px;
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+  .contact-filter-hint {
+    border-radius: 8px;
+    border: 1px solid #f0d58a;
+    background: #fff8e8;
+    color: #7a5a14;
+    padding: 10px 12px;
+    font-size: 13px;
+    margin-top: 12px;
+  }
+</style>
+
 
 <main class="content">
 	<div class="container-fluid p-0">
 		<div class="container-fluid" style="margin-top:30px;margin-bottom:20px;">
 			<div class="container">
-			
+        <div class="contact-filter-panel mb-3">
+          <div class="contact-filter-title">Campaign Contact Filters</div>
+          <div class="row" id="contactFilterRow">
+            <?php $isSuperAdmin = (($_SESSION['erole'] ?? $_SESSION['role'] ?? '') === 'super_admin'); ?>
+            <?php if ($isSuperAdmin): ?>
+            <div class="col-md-3 mb-2" id="superAdminCompanyWrap">
+              <label for="filterCompany"><strong>Select Company</strong></label>
+              <select id="filterCompany" class="form-control">
+                <option value="">Select Company</option>
+              </select>
+            </div>
+            <?php endif; ?>
+            <div class="<?php echo $isSuperAdmin ? 'col-md-3' : 'col-md-4'; ?> mb-2">
+              <label for="filterCampaign"><strong>Select Campaign</strong></label>
+              <select id="filterCampaign" class="form-control">
+                <option value="">Select Campaign</option>
+              </select>
+            </div>
+            <div class="<?php echo $isSuperAdmin ? 'col-md-2' : 'col-md-3'; ?> mb-2">
+              <label for="filterType"><strong>Select Type</strong></label>
+              <select id="filterType" class="form-control" disabled>
+                <option value="">Select Type</option>
+                <option value="attempt">Attempt</option>
+                <option value="agent">Agent</option>
+                <option value="last_outcome">Last Outcome</option>
+                <option value="state">State</option>
+                <option value="disposition">Disposition</option>
+              </select>
+            </div>
+            <div class="<?php echo $isSuperAdmin ? 'col-md-2' : 'col-md-3'; ?> mb-2">
+              <label for="filterValue" id="filterValueLabel"><strong>Select Value</strong></label>
+              <select id="filterValue" class="form-control" disabled>
+                <option value="">Select Value</option>
+              </select>
+            </div>
+            <div class="col-md-2 mb-2 d-flex align-items-end">
+              <button type="button" id="clearFiltersBtn" class="btn btn-outline-secondary w-100" disabled>Clear Filters</button>
+            </div>
+          </div>
+          <div id="filterHint" class="contact-filter-hint">
+            Please select Campaign first to start filtering contacts.
+          </div>
+        </div>
 			</div>
 		</div>
 		<div class="d-flex justify-content-end mb-2">

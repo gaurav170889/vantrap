@@ -81,6 +81,12 @@
             <input type="text" class="form-control" id="dnNumber" name="dn_number" placeholder="e.g. 802">
         </div>
 
+        <div class="form-group" id="dgReceptionGroup" style="display:none;">
+          <label for="dgReceptionNumber">DG Reception Number (Optional)</label>
+          <input type="text" class="form-control" id="dgReceptionNumber" name="dg_reception_number" placeholder="e.g. 9001">
+          <small class="form-text text-muted">If set, dialer transfers connected call to this number first, instead of directly to Route To queue.</small>
+        </div>
+
         <!-- Concurrent Calls / Minimum Free Channels -->
         <div class="form-group">
           <label for="concurrentCalls" id="concurrentCallsLabel">Concurrent Calls</label>
@@ -240,6 +246,7 @@
                   <th>Name</th>
                   <th>Route To</th>
                   <th>DN Number</th>
+                  <th>DG Reception</th>
                   <th>Return Call</th>
                   <th>Weekdays</th>
                   <th>Start Time</th>
@@ -274,6 +281,14 @@ $(document).ready(function() {
           { data: 'name', className: 'all' }, // Always visible
           { data: 'routeto' },
           { data: 'dn_number', defaultContent: '' },
+          {
+            data: 'dg_reception_number',
+            defaultContent: '',
+            render: function(data) {
+              const value = (data || '').toString().trim();
+              return value !== '' ? value : '-';
+            }
+          },
           { data: 'returncall' },
           { data: 'weekdays' },
           { data: 'starttime' },
@@ -371,6 +386,7 @@ $(document).ready(function() {
       $('#campaignName').val(rowData.name).prop('readonly', true); // Name is unique/readonly on edit? User choice. keeping readonly as per old code.
       $('#routeto').val(rowData.routeto);
       $('#dnNumber').val(rowData.dn_number);
+      $('#dgReceptionNumber').val(rowData.dg_reception_number || '');
       $('#returncall').val(rowData.returncall);
       $('#starttime').val(rowData.starttime);
       $('#stoptime').val(rowData.stoptime);
@@ -404,6 +420,13 @@ $(document).ready(function() {
     // Form Submission (Click Handler)
     $('#saveCampaignBtn').on('click', function (e) {
       const form = $('#campaignForm')[0];
+
+      const selectedDialerMode = $('#dialerMode').val();
+      const dgReceptionNumber = ($('#dgReceptionNumber').val() || '').trim();
+      if (selectedDialerMode === 'Predictive Dialer' && dgReceptionNumber !== '' && !/^\d+$/.test(dgReceptionNumber)) {
+        alert('DG Reception Number must be numeric.');
+        return;
+      }
     
       // Basic Validation
       if (!form.checkValidity()) {
@@ -636,6 +659,7 @@ $(document).ready(function() {
       routeTypeSelect.find('option[value="IVR"]').prop('disabled', true).prop('hidden', true).css('display', 'none');
       routeTypeSelect.find('option[value="DID"]').prop('disabled', true).prop('hidden', true).css('display', 'none');
       routeTypeSelect.val('Queue');
+      $('#dgReceptionGroup').show();
     } else {
       concurrentCallsLabel.text('Minimum Free Channels');
       concurrentCallsHelp.text('Power Dialer: keep at least this many channels free before dialing a new call.');
@@ -650,6 +674,8 @@ $(document).ready(function() {
       } else if (routeTypeSelect.find('option:selected:enabled').length === 0 || routeTypeSelect.val() === 'Queue') {
         routeTypeSelect.val('Extension');
       }
+      $('#dgReceptionGroup').hide();
+      $('#dgReceptionNumber').val('');
     }
   }
 
