@@ -705,8 +705,11 @@ async function tick() {
         }
 
         const [campaigns] = await db.execute(
-            `SELECT id, company_id, routeto, dn_number, dialer_mode, concurrent_calls, outbound_prefix FROM campaign 
-             WHERE status='Running' AND is_deleted=0 AND dialer_mode IN ('Predictive Dialer','Power Dialer')`
+            `SELECT c.id, c.company_id, c.routeto, c.dn_number, c.dialer_mode, c.concurrent_calls,
+                    COALESCE(p.outbound_prefix, 'No') AS outbound_prefix
+             FROM campaign c
+             LEFT JOIN pbxdetail p ON p.company_id = c.company_id
+             WHERE c.status='Running' AND c.is_deleted=0 AND c.dialer_mode IN ('Predictive Dialer','Power Dialer')`
         );
 
         for (const c of campaigns) {
