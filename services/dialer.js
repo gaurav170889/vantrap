@@ -588,7 +588,7 @@ async function globalMonitorTick() {
                                     [agentId, lead.id, companyId]
                                 );
                                 await db.execute(
-                                    `UPDATE dialer_call_log SET agent_id=? WHERE call_id=? AND company_id=?`,
+                                    `UPDATE dialer_call_log SET agent_id=?, status='ANSWERED' WHERE call_id=? AND company_id=?`,
                                     [agentId, originalCallId, companyId]
                                 );
                             }
@@ -659,12 +659,17 @@ async function spawnCallFlow(c, lead, queueDn, dialerDn) {
         const connected = await waitThenTransfer({ pbxurl, token, callid, destination, transferDn, dialerDn });
 
         if (connected) {
-            await logCallAttemptV2(c.company_id, c.id, lead.id, callid, 'ANSWERED', null, null, lead.attempts_used + 1);
+            // Call transferred to queue/agent destination, but not yet ANSWERED by agent
+            // Only mark ANSWERED when globalMonitorTick detects agent_connected
+            await logCallAttemptV2(c.company_id, c.id, lead.id, callid, 'TRANSFERRED', null, null, lead.attempts_used + 1);
 
-            // Do NOT increment agent count here. Agent is now talking to the contact.
+            // Do NOT increment agent count here. Waiting for agent to pick up.
 
             await unlockLead(c.company_id, lead.id, 'DISPO_PENDING');
-            // Background globalMonitorTick will handle detecting end of call and releasing lock
+            // Background globalMonitorTick will handle:
+            // 1. Detecting if/when agent connects
+            // 2. Updating log to ANSWERED if agent connects
+            // 3. Releasing lock when call ends
         } else {
             await logCallAttemptV2(c.company_id, c.id, lead.id, callid, 'NO_ANSWER', 'SYSTEM_NO_ANSWER', null, lead.attempts_used + 1);
 
