@@ -118,6 +118,110 @@ async function getPbxTokenByCompany(companyId) {
     return { pbxurl: safeUrl, token };
 }
 
+// ------------ DID Rotation ------------
+async function getCampaignDidRotationConfig(companyId, campaignId) {
+    let rows = [];
+    try {
+        const [qRows] = await db.execute(
+            `SELECT cor.outbound_rule_id, cor.last_used_map_id, cdm.id AS map_id, cdm.sort_order, d.did
+             FROM campaign_outbound_rule cor
+             INNER JOIN campaign_did_map cdm
+                ON cdm.company_id = cor.company_id AND cdm.campaign_id = cor.campaign_id
+             INNER JOIN pbx_dids d
+                ON d.id = cdm.did_id AND d.company_id = cdm.company_id
+             WHERE cor.company_id = ? AND cor.campaign_id = ?
+             ORDER BY cdm.sort_order ASC, cdm.id ASC`,
+            [companyId, campaignId]
+        );
+        rows = qRows;
+    } catch (e) {
+        if (e && e.code === 'ER_NO_SUCH_TABLE') return null;
+        throw e;
+    }
+
+    if (!rows.length) return null;
+
+    return {
+        outboundRuleId: Number(rows[0].outbound_rule_id || 0),
+        lastUsedMapId: rows[0].last_used_map_id ? Number(rows[0].last_used_map_id) : null,
+        didRows: rows.map(r => ({
+            mapId: Number(r.map_id),
+            did: String(r.did || "").trim()
+        })).filter(r => r.did)
+    };
+}
+
+function selectNextDidEntry(didRows, lastUsedMapId) {
+    if (!Array.isArray(didRows) || didRows.length === 0) return null;
+    if (!lastUsedMapId) return didRows[0];
+
+    const idx = didRows.findIndex(r => r.mapId === Number(lastUsedMapId));
+    if (idx < 0) return didRows[0];
+
+    return didRows[(idx + 1) % didRows.length];
+}
+
+function buildOutboundRulePatchPayload(rule, nextDid) {
+    const routes = Array.isArray(rule?.Routes) ? rule.Routes : [];
+    const dnRanges = Array.isArray(rule?.DNRanges) ? rule.DNRanges : [];
+    const groupIds = Array.isArray(rule?.GroupIds) ? rule.GroupIds : [];
+
+    const patchedRoutes = routes.map((r, idx) => ({
+        CallerID: idx === 0 ? nextDid : String(r?.CallerID || ""),
+        Prepend: String(r?.Prepend || ""),
+        StripDigits: Number(r?.StripDigits || 0),
+        TrunkId: Number.isFinite(Number(r?.TrunkId)) ? Number(r?.TrunkId) : -1,
+        TrunkName: r?.TrunkName ?? null,
+        Append: String(r?.Append || "")
+    }));
+
+    return {
+        Name: String(rule?.Name || ""),
+        Prefix: String(rule?.Prefix || ""),
+        DNRanges: dnRanges.map(d => ({
+            From: String(d?.From || ""),
+            To: d?.To ?? null
+        })),
+        NumberLengthRanges: String(rule?.NumberLengthRanges || ""),
+        Routes: patchedRoutes,
+        GroupIds: groupIds
+    };
+}
+
+async function rotateDidForCampaignIfConfigured({ companyId, campaignId, pbxurl, token }) {
+    const cfg = await getCampaignDidRotationConfig(companyId, campaignId);
+    if (!cfg || !cfg.outboundRuleId || !cfg.didRows.length) return null;
+
+    const nextEntry = selectNextDidEntry(cfg.didRows, cfg.lastUsedMapId);
+    if (!nextEntry || !nextEntry.did) return null;
+
+    const getUrl = `${pbxurl}/xapi/v1/OutboundRules(${cfg.outboundRuleId})`;
+    const getResp = await axios.get(getUrl, {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 15000
+    });
+
+    const payload = buildOutboundRulePatchPayload(getResp.data, nextEntry.did);
+
+    const patchUrl = `${pbxurl}/xapi/v1/OutboundRules(${cfg.outboundRuleId})`;
+    await axios.patch(patchUrl, payload, {
+        headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json"
+        },
+        timeout: 15000
+    });
+
+    await db.execute(
+        `UPDATE campaign_outbound_rule
+         SET last_used_map_id = ?, updated_at = NOW()
+         WHERE company_id = ? AND campaign_id = ?`,
+        [nextEntry.mapId, companyId, campaignId]
+    );
+
+    return nextEntry.did;
+}
+
 // ------------ Queue gate ------------
 async function queueAllowsDialing(companyId, queueDn) {
     const [rows] = await db.execute(
@@ -510,6 +614,23 @@ async function spawnCallFlow(c, lead, queueDn, dialerDn) {
     try {
         const { pbxurl, token } = await getPbxTokenByCompany(c.company_id);
         const destination = lead.phone_e164 || lead.phone_raw;
+
+        if (String(c.outbound_prefix || '').toLowerCase() === 'yes') {
+            try {
+                const rotatedDid = await rotateDidForCampaignIfConfigured({
+                    companyId: c.company_id,
+                    campaignId: c.id,
+                    pbxurl,
+                    token
+                });
+                if (rotatedDid) {
+                    log(`[Camp ${c.id}] Rotated outbound CallerID to ${rotatedDid}`);
+                }
+            } catch (e) {
+                log(`[Camp ${c.id}] DID rotation skipped due to error: ${e.message}`);
+            }
+        }
+
         if (!destination) {
             log(`[Camp ${c.id}] Lead ${lead.id} has no phone format. Marking invalid.`);
             await unlockLead(c.company_id, lead.id, 'INVALID');
@@ -584,7 +705,7 @@ async function tick() {
         }
 
         const [campaigns] = await db.execute(
-            `SELECT id, company_id, routeto, dn_number, dialer_mode, concurrent_calls FROM campaign 
+            `SELECT id, company_id, routeto, dn_number, dialer_mode, concurrent_calls, outbound_prefix FROM campaign 
              WHERE status='Running' AND is_deleted=0 AND dialer_mode IN ('Predictive Dialer','Power Dialer')`
         );
 
