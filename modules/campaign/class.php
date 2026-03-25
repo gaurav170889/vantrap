@@ -16,7 +16,7 @@ Class Campaign{
 		include(INCLUDEPATH.'modules/common/navbar_1.php');	
 		//echo "abcd";
 	//	exit();
-		if($_SESSION['role']== "uagent")
+		if(($_SESSION['erole'] ?? $_SESSION['role'] ?? '')== "uagent")
 		{
 			//$qagent = $this->getagent();
 			

@@ -75,7 +75,8 @@ Class Dashboard_modal{
 	public function pointone($tablename,$point)
 	{
 		$sql = "SELECT COUNT(point) FROM $tablename WHERE point = '$point' && start_date = curdate()";
-		$search_query = mysqli_query($this->conn, $sql);
+		$search_query = @mysqli_query($this->conn, $sql);
+		if (!$search_query) return false;
 		if(mysqli_num_rows($search_query) > 0){
 			$search_fetch = mysqli_fetch_array($search_query);
 			return $search_fetch;
@@ -92,7 +93,8 @@ Class Dashboard_modal{
 	public function pointthree($tablename,$point)
 	{
 		$sql = "SELECT COUNT(point) FROM $tablename WHERE point = '$point' && start_date = curdate()";
-		$search_query = mysqli_query($this->conn, $sql);
+		$search_query = @mysqli_query($this->conn, $sql);
+		if (!$search_query) return false;
 		if(mysqli_num_rows($search_query) > 0){
 			$search_fetch = mysqli_fetch_array($search_query);
 			return $search_fetch;
@@ -109,7 +111,8 @@ Class Dashboard_modal{
 	public function pointfive($tablename,$point)
 	{
 		$sql = "SELECT COUNT(point) FROM $tablename WHERE point = '$point' && start_date = curdate()";
-		$search_query = mysqli_query($this->conn, $sql);
+		$search_query = @mysqli_query($this->conn, $sql);
+		if (!$search_query) return false;
 		if(mysqli_num_rows($search_query) > 0){
 			$search_fetch = mysqli_fetch_array($search_query);
 			return $search_fetch;
@@ -126,7 +129,8 @@ Class Dashboard_modal{
 	public function totalcallpoint($tablename)
 	{
 		$sql= "SELECT COUNT(point) FROM $tablename WHERE start_date = curdate()";
-		$search_query = mysqli_query($this->conn, $sql);
+		$search_query = @mysqli_query($this->conn, $sql);
+		if (!$search_query) return false;
 		if(mysqli_num_rows($search_query) > 0){
 			$search_fetch = mysqli_fetch_array($search_query);
 			return $search_fetch;

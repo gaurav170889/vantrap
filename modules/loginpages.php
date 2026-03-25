@@ -44,6 +44,7 @@
 			
 			<button type="submit">Login</button>
 		</form>
+		 <?php $googleLoginUrl = isset($googleLoginUrl) ? $googleLoginUrl : '#'; $msLoginUrl = isset($msLoginUrl) ? $msLoginUrl : '#'; ?>
 		 <div class="login-container">
 			<a href="<?php echo $googleLoginUrl; ?>" class="google-login-btn">
 				<img src="https://developers.google.com/identity/images/btn_google_signin_dark_normal_web.png" alt="Sign in with Google">
