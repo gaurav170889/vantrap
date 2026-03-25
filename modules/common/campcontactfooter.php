@@ -70,6 +70,193 @@ $("#myInput").on("keyup", function()
 
 <script>
 $(document).ready(function () {
+    var contactTable;
+    var isSuperAdmin = <?php echo (($_SESSION['erole'] ?? $_SESSION['role'] ?? '') === 'super_admin') ? 'true' : 'false'; ?>;
+    var companyStorageKey = 'campcontact_selected_company_<?php echo (int)($_SESSION['zid'] ?? 0); ?>';
+
+    function getCampaignStorageKey() {
+        var selectedCompany = isSuperAdmin ? ($('#filterCompany').val() || '0') : '<?php echo (int)($_SESSION['company_id'] ?? 0); ?>';
+        return 'campcontact_selected_campaign_<?php echo (int)($_SESSION['zid'] ?? 0); ?>_' + selectedCompany;
+    }
+
+    function resetFilterValue() {
+        $('#filterValue').empty().append('<option value="">Select Value</option>').prop('disabled', true);
+        $('#filterValueLabel').html('<strong>Select Value</strong>');
+    }
+
+    function resetTypeAndValue() {
+        $('#filterType').val('').prop('disabled', true);
+        resetFilterValue();
+    }
+
+    function updateFilterHint() {
+        var companyId = isSuperAdmin ? $('#filterCompany').val() : '1';
+        var campaignId = $('#filterCampaign').val();
+        var type = $('#filterType').val();
+        var value = $('#filterValue').val();
+        var hint = '';
+
+        if (isSuperAdmin && !companyId) {
+            hint = 'Please select Company first, then choose Campaign.';
+            $('#filterHint').css({
+                'border-color': '#f0d58a',
+                'background': '#fff8e8',
+                'color': '#7a5a14'
+            });
+        } else if (!campaignId) {
+            hint = 'Please select Campaign first to start filtering contacts.';
+            $('#filterHint').css({
+                'border-color': '#f0d58a',
+                'background': '#fff8e8',
+                'color': '#7a5a14'
+            });
+        } else if (!type) {
+            hint = 'Campaign selected. You can now choose Type (Attempt, Agent, Last Outcome, State, Disposition).';
+            $('#filterHint').css({
+                'border-color': '#b9d6ff',
+                'background': '#eff6ff',
+                'color': '#194a8d'
+            });
+        } else if (!value) {
+            hint = 'Type selected. Please select a value to apply the filter.';
+            $('#filterHint').css({
+                'border-color': '#b9d6ff',
+                'background': '#eff6ff',
+                'color': '#194a8d'
+            });
+        } else {
+            hint = 'Filter active. Contact list is showing matching records.';
+            $('#filterHint').css({
+                'border-color': '#b8e0c2',
+                'background': '#ecfaf0',
+                'color': '#1f6a33'
+            });
+        }
+
+        $('#filterHint').text(hint);
+    }
+
+    function loadCompanyFilterOptions() {
+        if (!isSuperAdmin) {
+            loadCampaignFilterOptions();
+            return;
+        }
+
+        $.ajax({
+            url: 'campcontact/get_filter_companies',
+            type: 'POST',
+            dataType: 'json',
+            success: function (response) {
+                var currentSelected = $('#filterCompany').val();
+                var savedSelected = localStorage.getItem(companyStorageKey) || '';
+                var options = '<option value="">Select Company</option>';
+
+                $.each(response || [], function (_, item) {
+                    options += '<option value="' + item.id + '">' + item.name + '</option>';
+                });
+
+                $('#filterCompany').html(options);
+
+                if (!currentSelected && savedSelected && $('#filterCompany option[value="' + savedSelected + '"]').length > 0) {
+                    currentSelected = savedSelected;
+                }
+                if (!currentSelected && response && response.length > 0) {
+                    currentSelected = String(response[0].id);
+                }
+
+                if (currentSelected) {
+                    $('#filterCompany').val(currentSelected);
+                }
+
+                $('#filterCompany').trigger('change');
+            },
+            error: function () {
+                $('#filterCompany').html('<option value="">Select Company</option>');
+                $('#filterCompany').trigger('change');
+            }
+        });
+    }
+
+    function loadCampaignFilterOptions() {
+        var selectedCompany = isSuperAdmin ? ($('#filterCompany').val() || '') : '';
+
+        if (isSuperAdmin && !selectedCompany) {
+            $('#filterCampaign').html('<option value="">Select Campaign</option>').val('');
+            resetTypeAndValue();
+            updateFilterHint();
+            contactTable.ajax.reload();
+            return;
+        }
+
+        $.ajax({
+            url: 'campcontact/get_filter_campaigns',
+            type: 'POST',
+            data: isSuperAdmin ? { company_id: selectedCompany } : {},
+            dataType: 'json',
+            success: function (response) {
+                var currentSelected = $('#filterCampaign').val();
+                var savedSelected = localStorage.getItem(getCampaignStorageKey()) || '';
+                var options = '<option value="">Select Campaign</option>';
+                $.each(response || [], function (_, item) {
+                    options += '<option value="' + item.id + '">' + item.name + '</option>';
+                });
+                $('#filterCampaign').html(options);
+
+                if (!currentSelected && savedSelected && $('#filterCampaign option[value="' + savedSelected + '"]').length > 0) {
+                    currentSelected = savedSelected;
+                }
+
+                if (!currentSelected && response && response.length > 0) {
+                    currentSelected = String(response[0].id);
+                }
+
+                if (currentSelected) {
+                    $('#filterCampaign').val(currentSelected);
+                }
+
+                $('#filterCampaign').trigger('change');
+            },
+            error: function () {
+                $('#filterCampaign').html('<option value="">Select Campaign</option>');
+                $('#filterCampaign').trigger('change');
+            }
+        });
+    }
+
+    function loadFilterValues(campaignId, type) {
+        var labelMap = {
+            attempt: 'Select Attempt',
+            agent: 'Select Agent',
+            last_outcome: 'Select Last Outcome',
+            state: 'Select State',
+            disposition: 'Select Disposition'
+        };
+
+        $('#filterValueLabel').html('<strong>' + (labelMap[type] || 'Select Value') + '</strong>');
+        $('#filterValue').empty().append('<option value="">Loading...</option>').prop('disabled', true);
+
+        $.ajax({
+            url: 'campcontact/get_filter_values',
+            type: 'POST',
+            dataType: 'json',
+            data: {
+                company_id: isSuperAdmin ? ($('#filterCompany').val() || '') : '',
+                campaign_id: campaignId,
+                type: type
+            },
+            success: function (response) {
+                var options = '<option value="">' + (labelMap[type] || 'Select Value') + '</option>';
+                $.each(response || [], function (_, item) {
+                    options += '<option value="' + item.value + '">' + item.label + '</option>';
+                });
+                $('#filterValue').html(options).prop('disabled', false);
+            },
+            error: function () {
+                $('#filterValue').html('<option value="">Select Value</option>').prop('disabled', true);
+            }
+        });
+    }
+
     // JIT Popover Initialization (Avoids jQuery UI Tooltip conflict)
     $('body').on('mouseenter', '[data-toggle="tooltip"]', function() {
         if (!$(this).data('bs.popover')) {
@@ -85,11 +272,16 @@ $(document).ready(function () {
         }
     });
 
-    $('#campaignTable').DataTable(
-    {
+    contactTable = $('#campaignTable').DataTable({
         ajax: {
-            url: 'campcontact/getallcontact', // Replace with your actual PHP endpoint
+            url: 'campcontact/getallcontact',
             type: 'POST',
+            data: function (d) {
+                d.company_id = isSuperAdmin ? ($('#filterCompany').val() || '') : '';
+                d.campaign_id = $('#filterCampaign').val();
+                d.filter_type = $('#filterType').val();
+                d.filter_value = $('#filterValue').val();
+            },
             dataSrc: ''
         },
         columns: [
@@ -175,10 +367,84 @@ $(document).ready(function () {
         },
         language: {
             search: "_INPUT_",
-            searchPlaceholder: "Search all columns"
+            searchPlaceholder: "Search all columns",
+            emptyTable: "Please select Campaign first to view contacts."
         },
         "order": [[0, "desc"]]
     });
+
+    resetTypeAndValue();
+    updateFilterHint();
+
+    if (isSuperAdmin) {
+        $('#filterCompany').on('change', function () {
+            var companyId = $(this).val();
+
+            if (companyId) {
+                localStorage.setItem(companyStorageKey, String(companyId));
+            } else {
+                localStorage.removeItem(companyStorageKey);
+            }
+
+            $('#filterCampaign').val('');
+            resetTypeAndValue();
+            loadCampaignFilterOptions();
+        });
+    }
+
+    $('#filterCampaign').on('change', function () {
+        var campaignId = $(this).val();
+
+        if (!campaignId) {
+            localStorage.removeItem(getCampaignStorageKey());
+            resetTypeAndValue();
+            $('#clearFiltersBtn').prop('disabled', true);
+        } else {
+            localStorage.setItem(getCampaignStorageKey(), String(campaignId));
+            $('#filterType').prop('disabled', false).val('');
+            resetFilterValue();
+            $('#clearFiltersBtn').prop('disabled', false);
+        }
+
+        updateFilterHint();
+        contactTable.ajax.reload();
+    });
+
+    $('#filterType').on('change', function () {
+        var campaignId = $('#filterCampaign').val();
+        var type = $(this).val();
+
+        if (!campaignId || !type) {
+            resetFilterValue();
+            updateFilterHint();
+            contactTable.ajax.reload();
+            return;
+        }
+
+        loadFilterValues(campaignId, type);
+        updateFilterHint();
+        contactTable.ajax.reload();
+    });
+
+    $('#filterValue').on('change', function () {
+        updateFilterHint();
+        contactTable.ajax.reload();
+    });
+
+    $('#clearFiltersBtn').on('click', function () {
+        if (isSuperAdmin) {
+            $('#filterCompany').val('');
+            localStorage.removeItem(companyStorageKey);
+        }
+        $('#filterCampaign').val('');
+        localStorage.removeItem(getCampaignStorageKey());
+        resetTypeAndValue();
+        $(this).prop('disabled', true);
+        updateFilterHint();
+        contactTable.ajax.reload();
+    });
+
+    loadCompanyFilterOptions();
 
 
     // Populate Disposition Dropdown on Load
@@ -291,7 +557,7 @@ function submitDisposition() {
         success: function(response) {
             if (response.success) {
                 $('#dispositionModal').modal('hide');
-                $('#campaignTable').DataTable().ajax.reload();
+                contactTable.ajax.reload();
                 alert("Disposition Updated!");
             } else {
                 alert("Error: " + (response.error || "Unknown error"));

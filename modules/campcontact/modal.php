@@ -25,11 +25,153 @@ Class Campcontact_modal{
             echo "Failed to delete contacts.";
         }
 	}
+
+    public function getFilterCompanies()
+    {
+        $query = "SELECT id, name FROM companies ORDER BY name ASC";
+        $result = mysqli_query($this->conn, $query);
+
+        $data = [];
+        if ($result) {
+            while ($row = mysqli_fetch_assoc($result)) {
+                $data[] = [
+                    'id' => intval($row['id']),
+                    'name' => $row['name']
+                ];
+            }
+        }
+
+        return $data;
+    }
+
+    public function getFilterCampaigns($company_id = null)
+    {
+        $where = "WHERE is_deleted = 0";
+        if ($company_id !== null) {
+            $company_id = intval($company_id);
+            $where .= " AND company_id = $company_id";
+        }
+
+        $query = "SELECT id, name FROM campaign $where ORDER BY name ASC";
+        $result = mysqli_query($this->conn, $query);
+
+        $data = [];
+        if ($result) {
+            while ($row = mysqli_fetch_assoc($result)) {
+                $data[] = [
+                    'id' => intval($row['id']),
+                    'name' => $row['name']
+                ];
+            }
+        }
+
+        return $data;
+    }
+
+    public function getFilterValues($company_id, $campaign_id, $type)
+    {
+        $company_id = ($company_id === null) ? null : intval($company_id);
+        $campaign_id = intval($campaign_id);
+        $type = strtolower(trim($type));
+
+        if ($campaign_id <= 0) {
+            return [];
+        }
+
+        $campaignCompanyWhere = ($company_id !== null) ? " AND company_id = $company_id" : "";
+        $contactCompanyWhere = ($company_id !== null) ? " AND c.company_id = $company_id" : "";
+        $contactCompanyWherePlain = ($company_id !== null) ? " AND company_id = $company_id" : "";
+
+        if ($type === 'attempt') {
+            $attemptQuery = "SELECT returncall FROM campaign WHERE id = $campaign_id $campaignCompanyWhere LIMIT 1";
+            $attemptRes = mysqli_query($this->conn, $attemptQuery);
+            $maxAttempts = 3;
+            if ($attemptRes && mysqli_num_rows($attemptRes) > 0) {
+                $row = mysqli_fetch_assoc($attemptRes);
+                $maxAttempts = intval($row['returncall']);
+            }
+            if ($maxAttempts <= 0) {
+                $maxAttempts = 3;
+            }
+
+            $values = [];
+            for ($i = 1; $i <= $maxAttempts; $i++) {
+                $values[] = [
+                    'value' => (string)$i,
+                    'label' => (string)$i
+                ];
+            }
+            return $values;
+        }
+
+        $values = [];
+        if ($type === 'agent') {
+            $query = "SELECT DISTINCT c.agent_connected, a.agent_name
+                      FROM campaignnumbers c
+                      LEFT JOIN agent a ON c.agent_connected = a.agent_id
+                                            WHERE c.campaignid = $campaign_id
+                                                $contactCompanyWhere
+                        AND c.agent_connected IS NOT NULL
+                        AND c.agent_connected <> ''
+                      ORDER BY a.agent_name ASC";
+            $res = mysqli_query($this->conn, $query);
+            if ($res) {
+                while ($row = mysqli_fetch_assoc($res)) {
+                    $agentId = (string)$row['agent_connected'];
+                    $agentLabel = trim((string)$row['agent_name']);
+                    $values[] = [
+                        'value' => $agentId,
+                        'label' => $agentLabel !== '' ? $agentLabel : $agentId
+                    ];
+                }
+            }
+            return $values;
+        }
+
+        $columnMap = [
+            'last_outcome' => 'last_call_status',
+            'state' => 'state',
+            'disposition' => 'last_disposition'
+        ];
+
+        if (!isset($columnMap[$type])) {
+            return [];
+        }
+
+        $col = $columnMap[$type];
+        $query = "SELECT DISTINCT $col AS val
+                  FROM campaignnumbers
+                                    WHERE campaignid = $campaign_id
+                                        $contactCompanyWherePlain
+                    AND $col IS NOT NULL
+                    AND TRIM($col) <> ''
+                  ORDER BY val ASC";
+        $res = mysqli_query($this->conn, $query);
+
+        if ($res) {
+            while ($row = mysqli_fetch_assoc($res)) {
+                $val = (string)$row['val'];
+                $values[] = [
+                    'value' => $val,
+                    'label' => $val
+                ];
+            }
+        }
+
+        return $values;
+    }
 	
-    public function getallcontact($company_id = null) {
+    public function getallcontact($company_id = null, $campaign_id = 0, $filter_type = '', $filter_value = '') {
          $where = "WHERE 1=1";
          if($company_id !== null) {
              $where .= " AND c.company_id = $company_id";
+         }
+
+         $campaign_id = intval($campaign_id);
+         if ($campaign_id > 0) {
+             $where .= " AND c.campaignid = $campaign_id";
+         } else {
+             return json_encode([]);
          }
          
          // Filter for agents only
@@ -47,6 +189,23 @@ Class Campcontact_modal{
                  $where .= " AND c.agent_connected = '$agent_id'";
              } else {
                  $where .= " AND 1=0"; 
+             }
+         }
+
+         $filter_type = strtolower(trim((string)$filter_type));
+         if ($filter_type !== '' && $filter_value !== '') {
+             $safeFilterValue = mysqli_real_escape_string($this->conn, (string)$filter_value);
+
+             if ($filter_type === 'attempt') {
+                 $where .= " AND c.attempts_used = " . intval($filter_value);
+             } elseif ($filter_type === 'agent') {
+                 $where .= " AND c.agent_connected = '$safeFilterValue'";
+             } elseif ($filter_type === 'last_outcome') {
+                 $where .= " AND c.last_call_status = '$safeFilterValue'";
+             } elseif ($filter_type === 'state') {
+                 $where .= " AND c.state = '$safeFilterValue'";
+             } elseif ($filter_type === 'disposition') {
+                 $where .= " AND c.last_disposition = '$safeFilterValue'";
              }
          }
 

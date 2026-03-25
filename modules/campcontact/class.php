@@ -46,11 +46,57 @@ Class Campcontact{
 	
     public function getallcontact() 
     {
-        $company_id = $_SESSION['company_id'] ?? 0;
-        $data = $this->modal->getallcontact($company_id) ;
+        $role = $_SESSION['erole'] ?? $_SESSION['role'] ?? '';
+        $company_id = ($role === 'super_admin')
+            ? (isset($_POST['company_id']) ? intval($_POST['company_id']) : 0)
+            : ($_SESSION['company_id'] ?? 0);
+        $campaign_id = isset($_POST['campaign_id']) ? intval($_POST['campaign_id']) : 0;
+        $filter_type = isset($_POST['filter_type']) ? trim($_POST['filter_type']) : '';
+        $filter_value = isset($_POST['filter_value']) ? trim($_POST['filter_value']) : '';
+
+        $data = $this->modal->getallcontact($company_id, $campaign_id, $filter_type, $filter_value);
         header('Content-Type: application/json');
         echo $data ;
         
+    }
+
+    public function get_filter_companies()
+    {
+        $role = $_SESSION['erole'] ?? $_SESSION['role'] ?? '';
+        if ($role !== 'super_admin') {
+            header('Content-Type: application/json');
+            echo json_encode([]);
+            return;
+        }
+
+        $data = $this->modal->getFilterCompanies();
+        header('Content-Type: application/json');
+        echo json_encode($data);
+    }
+
+    public function get_filter_campaigns()
+    {
+        $role = $_SESSION['erole'] ?? $_SESSION['role'] ?? '';
+        $company_id = ($role === 'super_admin')
+            ? (isset($_POST['company_id']) ? intval($_POST['company_id']) : 0)
+            : ($_SESSION['company_id'] ?? 0);
+        $data = $this->modal->getFilterCampaigns($company_id);
+        header('Content-Type: application/json');
+        echo json_encode($data);
+    }
+
+    public function get_filter_values()
+    {
+        $role = $_SESSION['erole'] ?? $_SESSION['role'] ?? '';
+        $company_id = ($role === 'super_admin')
+            ? (isset($_POST['company_id']) ? intval($_POST['company_id']) : 0)
+            : ($_SESSION['company_id'] ?? 0);
+        $campaign_id = isset($_POST['campaign_id']) ? intval($_POST['campaign_id']) : 0;
+        $type = isset($_POST['type']) ? trim($_POST['type']) : '';
+
+        $data = $this->modal->getFilterValues($company_id, $campaign_id, $type);
+        header('Content-Type: application/json');
+        echo json_encode($data);
     }
 	
 	public function addcampaign()
