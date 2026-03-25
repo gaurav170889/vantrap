@@ -27,7 +27,7 @@
         <script src="https://oss.maxcdn.com/respond/1.4.2/respond.min.js"></script><![endif]-->
 	
   </head>
-  <body>
+  <body style="background-image: url('<?php echo BASE_URL; ?>modules/common/login/img/project-42.jpg'); background-size: cover; background-position: center center; background-attachment: fixed; background-repeat: no-repeat;">
     <div class="page login-page">
 	  <div class="login-container">
 		<!-- Enlarged Company Logo -->

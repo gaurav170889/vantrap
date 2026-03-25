@@ -2,9 +2,7 @@
 		font-family: Arial, sans-serif;
 		margin: 0;
 		padding: 0;
-		background: url('../img/project-42.jpg') no-repeat center center fixed;
-		background-size: cover;
-		background-color: #f0f0f0;
+		background-color: #f0f0f0; /* image injected via inline style using BASE_URL */
 		display: flex;
 		justify-content: center;
 		align-items: center;
