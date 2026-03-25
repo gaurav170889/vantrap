@@ -1,6 +1,10 @@
 ErrorDocument 404 index.php
 DirectoryIndex index.php 
 Options -Indexes
+
+# TEMP DEBUG - remove after fixing production error
+php_flag display_errors on
+php_value error_reporting 32767
 RewriteEngine on
 RewriteCond %{REQUEST_FILENAME} !-d
 RewriteCond %{REQUEST_FILENAME} !-f
