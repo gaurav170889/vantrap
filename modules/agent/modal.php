@@ -24,6 +24,33 @@ Class Agent_modal{
 		return ($res && mysqli_num_rows($res) > 0);
 	}
 
+	private function resolveUserLinkValueForAgent($agentId, $companyId)
+	{
+		$agentId = intval($agentId);
+		$companyId = intval($companyId);
+		if ($agentId <= 0) {
+			return 0;
+		}
+
+		if ($this->hasColumn('agent', '3cx_id')) {
+			$sql = "SELECT `3cx_id` FROM `agent` WHERE `agent_id` = $agentId";
+			if ($companyId > 0 && $this->hasColumn('agent', 'company_id')) {
+				$sql .= " AND `company_id` = $companyId";
+			}
+			$sql .= " LIMIT 1";
+			$res = mysqli_query($this->conn, $sql);
+			if ($res && mysqli_num_rows($res) > 0) {
+				$row = mysqli_fetch_assoc($res);
+				$linkValue = intval($row['3cx_id'] ?? 0);
+				if ($linkValue > 0) {
+					return $linkValue;
+				}
+			}
+		}
+
+		return $agentId;
+	}
+
 	public function agentHasPortalLogin($agentId, $companyId)
 	{
 		$agentId = intval($agentId);
@@ -32,7 +59,18 @@ Class Agent_modal{
 			return false;
 		}
 
-		$sql = "SELECT id FROM users WHERE agentid = $agentId";
+		if ($this->hasColumn('users', 'agentid')) {
+			$sql = "SELECT id FROM users WHERE agentid = $agentId";
+		} else if ($this->hasColumn('users', 'user_id')) {
+			$linkValue = $this->resolveUserLinkValueForAgent($agentId, $companyId);
+			if ($linkValue <= 0) {
+				return false;
+			}
+			$sql = "SELECT id FROM users WHERE user_id = $linkValue";
+		} else {
+			return false;
+		}
+
 		if ($companyId > 0 && $this->hasColumn('users', 'company_id')) {
 			$sql .= " AND company_id = $companyId";
 		}
@@ -82,6 +120,8 @@ Class Agent_modal{
 		}
 		if ($this->hasColumn('users', 'agentid')) {
 			$data['agentid'] = $agentId;
+		} else if ($this->hasColumn('users', 'user_id')) {
+			$data['user_id'] = $this->resolveUserLinkValueForAgent($agentId, $companyId);
 		}
 
 		if (empty($data)) {
