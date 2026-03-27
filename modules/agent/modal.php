@@ -14,6 +14,82 @@ Class Agent_modal{
 		$form_data = mysqli_real_escape_string($this->conn, trim(strip_tags($form_data)));
 		return $form_data;
 	}
+
+	private function hasColumn($table, $column)
+	{
+		$table = preg_replace('/[^a-zA-Z0-9_]/', '', $table);
+		$column = preg_replace('/[^a-zA-Z0-9_]/', '', $column);
+		$sql = "SHOW COLUMNS FROM `$table` LIKE '$column'";
+		$res = mysqli_query($this->conn, $sql);
+		return ($res && mysqli_num_rows($res) > 0);
+	}
+
+	public function agentHasPortalLogin($agentId, $companyId)
+	{
+		$agentId = intval($agentId);
+		$companyId = intval($companyId);
+		if ($agentId <= 0) {
+			return false;
+		}
+
+		$sql = "SELECT id FROM users WHERE agentid = $agentId";
+		if ($companyId > 0 && $this->hasColumn('users', 'company_id')) {
+			$sql .= " AND company_id = $companyId";
+		}
+		$sql .= " LIMIT 1";
+		$res = mysqli_query($this->conn, $sql);
+		return ($res && mysqli_num_rows($res) > 0);
+	}
+
+	public function usernameExists($username)
+	{
+		$username = mysqli_real_escape_string($this->conn, $username);
+		$emailCol = $this->hasColumn('users', 'user_email') ? 'user_email' : 'email';
+		$sql = "SELECT id FROM users WHERE $emailCol = '$username' LIMIT 1";
+		$res = mysqli_query($this->conn, $sql);
+		return ($res && mysqli_num_rows($res) > 0);
+	}
+
+	public function createPortalLoginForAgent($agentId, $companyId, $username, $passwordHash)
+	{
+		$agentId = intval($agentId);
+		$companyId = intval($companyId);
+		if ($agentId <= 0 || $companyId <= 0 || $username === '' || $passwordHash === '') {
+			return false;
+		}
+
+		$data = [];
+		if ($this->hasColumn('users', 'user_email')) {
+			$data['user_email'] = $username;
+		}
+		if ($this->hasColumn('users', 'email')) {
+			$data['email'] = $username;
+		}
+		if ($this->hasColumn('users', 'password_hash')) {
+			$data['password_hash'] = $passwordHash;
+		}
+		if ($this->hasColumn('users', 'password')) {
+			$data['password'] = $passwordHash;
+		}
+		if ($this->hasColumn('users', 'user_type')) {
+			$data['user_type'] = 'uagent';
+		}
+		if ($this->hasColumn('users', 'role')) {
+			$data['role'] = 'uagent';
+		}
+		if ($this->hasColumn('users', 'company_id')) {
+			$data['company_id'] = $companyId;
+		}
+		if ($this->hasColumn('users', 'agentid')) {
+			$data['agentid'] = $agentId;
+		}
+
+		if (empty($data)) {
+			return false;
+		}
+
+		return $this->insert('users', $data);
+	}
 	
 	public function insert($tblname, $filed_data){
 

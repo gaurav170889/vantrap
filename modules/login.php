@@ -20,7 +20,7 @@ class Login {
 			
             // Update to match new schema: user_email instead of email
             // Use single quotes for SQL string literal
-			$getuser = $this->modal->getAllRecords('users','*',"user_email='$userlogin'");
+			$getuser = $this->modal->getUserByLogin($userlogin);
             
             /*
             echo "Query Result: ";
@@ -29,22 +29,23 @@ class Login {
  			
             // Check if user exists
 			if(isset($getuser['id'])) {
-                // Verify password against password_hash
-				if(password_verify($userpass, $getuser['password_hash'])) {
-					/* 
-                       session_start() is already called in index.php. 
-                       Calling it again might be ignored or cause notice.
-                       We will just set the session variables.
-                    */
-					// ini_set('session.gc_maxlifetime', 86400); // Optional: change dynamic
-                    
-                    // Regenerate ID to prevent fixation
-                    session_regenerate_id(true); 
+                // Support both password_hash and password columns
+				$storedPassword = !empty($getuser['password_hash']) ? $getuser['password_hash'] : ($getuser['password'] ?? '');
+				if(password_verify($userpass, $storedPassword)) {
+					session_regenerate_id(true); 
+
+					// Resolve role from either 'role' or 'user_type' column
+					$resolvedRole = !empty($getuser['role']) ? $getuser['role'] : ($getuser['user_type'] ?? '');
+					// Resolve email from either 'email' or 'user_email' column
+					$resolvedEmail = !empty($getuser['email']) ? $getuser['email'] : ($getuser['user_email'] ?? '');
+					// Resolve company_id
+					$resolvedCompany = !empty($getuser['company_id']) ? $getuser['company_id'] : null;
 
 					$_SESSION['zid'] = $getuser['id'];
-					$_SESSION['ename'] = $getuser['user_email'];
-					$_SESSION['erole'] = $getuser['user_type'];
-                    $_SESSION['company_id'] = $getuser['company_id'];
+					$_SESSION['ename'] = $resolvedEmail;
+					$_SESSION['erole'] = $resolvedRole;
+					$_SESSION['role']  = $resolvedRole;
+                    $_SESSION['company_id'] = $resolvedCompany;
 
                     echo '<div class="alert alert-success" role="alert">
                         <button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button>
@@ -52,7 +53,7 @@ class Login {
                         </div>';
                     
                     // Redirect based on role
-                    if ($getuser['user_type'] == 'super_admin') {
+                    if ($resolvedRole == 'super_admin') {
                          header("Location: ".BASE_URL."?route=admindashboard/index"); 
                     } else {
                          header("Location: ".BASE_URL);

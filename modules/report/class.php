@@ -36,36 +36,22 @@ Class Report{
 	
 	public function records()
 	{
+		$company_id = isset($_SESSION['company_id']) ? intval($_SESSION['company_id']) : null;
+		
 		if (isset($_POST['start_date']) && isset($_POST['end_date'])) 
 		{
 			$start_date = $_POST['start_date'];
 			$end_date = $_POST['end_date'];
-			//$agentgrp=$_POST['sgroup'];
-			//$agent=$_POST['sagent'];
 			
 			if(!empty($start_date) && !empty($end_date))
 			{
 		   // $rows = $model->date_range($start_date, $end_date,$agentgrp,$agent);
-			 $rows = $this->modal->date_rangetype($start_date, $end_date);
-			}
-			/*elseif(empty($agentgrp) && empty($agent) && $type)
-			{
-				
-		   // $rows = $model->date_range($start_date, $end_date,$agentgrp,$agent);
-			 $rows = $this->modal->date_rangetype($start_date, $end_date,$type);
-			}*/
-			/*elseif(empty($agent))
-			{
-				$rows = $this->modal->daterangequeue($start_date, $end_date,$agentgrp);
-			}
-			else
-			{
-				$rows = $this->modal->dateagent($start_date, $end_date,$agentgrp,$agent);
-			}*/	
+			 $rows = $this->modal->date_rangetype($start_date, $end_date, $company_id);
+			}	
 		} 
 		else 
 		{
-			$rows = $this->modal->fetch();
+			$rows = $this->modal->fetch($company_id);
 		}
 		
 		echo json_encode($rows);
