@@ -76,46 +76,105 @@ $(document).ready(function (){
 	});
 
 	$(document).on("click", "#add_user", function(){
+		$('#manager_scope').val('all');
+		$('#manager_agent_search').val('');
+		$('#managerAgentsWrap').hide();
+		$('#managerScopeWrap').hide();
+		$('#roleagent').hide();
+		$('#msg_7').text('');
 		
 		var groupname = "grpname";
 		$.ajax({
    		type:'POST',
 		url:'users/getagent',
-                data: {depart:groupname},
+                data: {depart:groupname, company_id: $('#user_company_id').val()},
                 dataType: 'json',
                 success:function(response){
-                var len = response.length;
-
                 $("#agent").empty();
-				
-                for( var i = 0; i<len; i++){
-                    var id = response[i]['agent_id'];
-                    var agentname = response[i]['agent_name'];
-                    var agentext= response[i]['agent_ext'];
-                    $("#agent").append("<option value='"+id+"'>"+agentname+"("+agentext+")</option>");
+				$("#agent").append("<option value='' selected>Choose...</option>");
+				$("#manager_agents").empty();
 
-                   }
+				if (Array.isArray(response)) {
+					for (var i = 0; i < response.length; i++) {
+						var id = response[i]['agent_id'];
+						var agentname = response[i]['agent_name'];
+						var agentext= response[i]['agent_ext'];
+						var optionLabel = agentname + " (" + agentext + ")";
+						$("#agent").append("<option value='"+id+"'>"+optionLabel+"</option>");
+						$("#manager_agents").append("<option value='"+id+"'>"+optionLabel+"</option>");
+					}
+				}
                }
            });		
 	
 	});
 
-	$("#role").change(function(){
-	console.clear();
-	$(this).find("option:selected").each(function(){
-	var optionValue = $(this).attr("value");
-		if(optionValue == "uagent")
-		{
-			$("#roleagent").show();
-			//console.log(optionValue);
-			//$("." + optionValue).hide();
-		} 
-		else
-		{
-			$("#roleagent").hide();
+	$('#user_company_id').on('change', function() {
+		if ($('#exampleModalCenter').hasClass('show')) {
+			$('#add_user').trigger('click');
 		}
-	  });
+	});
+
+	$("#role").change(function(){
+		$(this).find("option:selected").each(function(){
+			var optionValue = $(this).attr("value");
+			if(optionValue == "uagent") {
+				$("#roleagent").show();
+				$("#managerScopeWrap").hide();
+				$("#managerAgentsWrap").hide();
+			} else if(optionValue == "manager") {
+				$("#roleagent").hide();
+				$("#managerScopeWrap").show();
+				if($("#manager_scope").val() === "selected") {
+					$("#managerAgentsWrap").show();
+				} else {
+					$("#managerAgentsWrap").hide();
+				}
+			} else {
+				$("#roleagent").hide();
+				$("#managerScopeWrap").hide();
+				$("#managerAgentsWrap").hide();
+			}
+		});
 	}).change();
+
+	$("#manager_scope").on("change", function(){
+		if($(this).val() === "selected") {
+			$("#managerAgentsWrap").show();
+		} else {
+			$("#managerAgentsWrap").hide();
+			$("#manager_agents option").prop("selected", false);
+			$("#manager_agent_search").val("");
+			$("#manager_agents option").show();
+		}
+	});
+
+	$("#manager_agent_search").on("keyup", function(){
+		var needle = String($(this).val() || "").toLowerCase();
+		$("#manager_agents option").each(function(){
+			var txt = String($(this).text() || "").toLowerCase();
+			$(this).toggle(txt.indexOf(needle) > -1);
+		});
+	});
+
+	$("#upd_manager_scope").on("change", function(){
+		if($(this).val() === "selected") {
+			$("#upd_manager_agents_wrap").show();
+		} else {
+			$("#upd_manager_agents_wrap").hide();
+			$("#upd_manager_agents option").prop("selected", false);
+			$("#upd_manager_agent_search").val("");
+			$("#upd_manager_agents option").show();
+		}
+	});
+
+	$("#upd_manager_agent_search").on("keyup", function(){
+		var needle = String($(this).val() || "").toLowerCase();
+		$("#upd_manager_agents option").each(function(){
+			var txt = String($(this).text() || "").toLowerCase();
+			$(this).toggle(txt.indexOf(needle) > -1);
+		});
+	});
 
 	
 	$('#user_ins_rec').on("submit", function(e){
@@ -126,13 +185,16 @@ $(document).ready(function (){
 			url:'users/insprocess',
 			data:$(this).serialize(),
 			success:function(vardata){
+				$('.error-msg').text('');
 
 				var json = JSON.parse(vardata);
 
 				if(json.status == 101){
 					console.log(json.msg);
 					//$('#tbl_rec').load('agent/record');
-					$('#ins_rec').trigger('reset');
+					$('#user_ins_rec').trigger('reset');
+					$('#role').trigger('change');
+					$('#manager_scope').val('all').trigger('change');
 					$('#close_click').trigger('click');
 					location.reload();
 				}
@@ -157,7 +219,15 @@ $(document).ready(function (){
 					console.log(json.msg);
 				}
 				else if(json.status == 107){
-					$('#msg_5').text(json.msg);
+					$('#msg_6').text(json.msg);
+					console.log(json.msg);
+				}
+				else if(json.status == 108){
+					$('#msg_7').text(json.msg);
+					console.log(json.msg);
+				}
+				else if(json.status == 111){
+					$('#msg_1').css('color', '#dc3545').text(json.msg);
 					console.log(json.msg);
 				}
 				else{
@@ -168,6 +238,84 @@ $(document).ready(function (){
 
 		});
 
+	});
+
+	$(document).on("click", "button.editdata", function(){
+		$('.error-msg').text('');
+		$('#sc_msg').text('');
+		$('#upd_2').val('');
+		$('#upd_manager_agent_search').val('');
+		$('#upd_manager_agents').empty();
+		$('#upd_manager_scope_wrap').hide();
+		$('#upd_manager_agents_wrap').hide();
+		$('#upd_agent_info_wrap').hide();
+
+		var check_id = $(this).data('dataid');
+		$.getJSON("users/updateprocess", {checkid : check_id}, function(json){
+			if(json.status == 0){
+				$('#upd_1').val(json.name || '');
+				$('#upd_role_label').val(json.urole || '');
+				$('#upd_6').val(check_id);
+				$('#upd_agent_info').val(json.uagent || '');
+
+				if (json.role_code === 'uagent') {
+					$('#upd_agent_info_wrap').show();
+				}
+
+				if (json.role_code === 'manager' || json.role_code === 'company_admin') {
+					$('#upd_manager_scope_wrap').show();
+					$('#upd_manager_scope').val(json.manager_scope || 'all');
+					if (Array.isArray(json.available_agents)) {
+						for (var i = 0; i < json.available_agents.length; i++) {
+							var ag = json.available_agents[i];
+							var isSelected = Array.isArray(json.manager_agents) && json.manager_agents.indexOf(parseInt(ag.id, 10)) !== -1;
+							$('#upd_manager_agents').append('<option value="' + ag.id + '" ' + (isSelected ? 'selected' : '') + '>' + ag.label + '</option>');
+						}
+					}
+
+					if ((json.manager_scope || 'all') === 'selected') {
+						$('#upd_manager_agents_wrap').show();
+					}
+				}
+			}
+			else{
+				console.log(json.msg);
+			}
+		});
+	});
+
+	$('#temp_update').on("submit", function(e){
+		e.preventDefault();
+		$('.error-msg').text('');
+		$('#sc_msg').text('');
+
+		$.ajax({
+			type:'POST',
+			url:'users/updateprocess2',
+			data:$(this).serialize(),
+			success:function(vardata){
+				var json = JSON.parse(vardata);
+
+				if(json.status == 101){
+					$('#sc_msg').text(json.msg);
+					$('#temp_update').trigger('reset');
+					$('#up_cancle').trigger('click');
+					location.reload();
+				}
+				else if(json.status == 102){
+					$('#umsg_5').text(json.msg);
+				}
+				else if(json.status == 107){
+					$('#umsg_6').text(json.msg);
+				}
+				else if(json.status == 110){
+					$('#umsg_2').text(json.msg);
+				}
+				else{
+					$('#umsg_5').text(json.msg || 'Update failed');
+				}
+			}
+		});
 	});
 
 	
@@ -182,6 +330,34 @@ $(document).ready(function (){
 			}
 			else{
 				console.log(json.msg);
+			}
+		});
+	});
+
+	var selectedDeleteId = 0;
+	$(document).on("click", "button.deletedata", function(){
+		selectedDeleteId = parseInt($(this).data('dataid'), 10) || 0;
+	});
+
+	$(document).on("click", "#deleterec", function(){
+		if(!selectedDeleteId){
+			console.log('Invalid delete id');
+			return;
+		}
+
+		$.ajax({
+			type:'POST',
+			url:'users/deleteprocess',
+			data:{delete_id : selectedDeleteId},
+			success:function(vardata){
+				var json = JSON.parse(vardata);
+				if(json.status == 0){
+					$('#de_cancle').trigger('click');
+					location.reload();
+				}
+				else{
+					console.log(json.msg || 'Delete failed');
+				}
 			}
 		});
 	});
@@ -201,6 +377,94 @@ $(document).ready(function (){
 <script src="modules/common/js/dataTables.bootstrap4.min.js"></script>
 <script src="modules/common/js/dataTables.buttons.min.js"></script>
 
+<script>
+$(document).ready(function() {
+	// Load users data via AJAX when page loads
+	var userBody = $('#exampleuser tbody');
+	if (userBody.length && userBody.children().length === 0) {
+		$.ajax({
+			type: 'POST',
+			url: 'users/record',
+			dataType: 'json',
+			success: function(data) {
+				userBody.empty();
+				if (data && data.length > 0) {
+					var counter = 1;
+					$.each(data, function(index, user) {
+						var role = user.role;
+						var displayRole = 'User (Agent)';
+						if (role === 'company_admin' || role === 'manager') {
+							displayRole = 'Manager';
+						}
+						var row = '<tr>' +
+							'<td style="text-align:center;vertical-align:center">' + counter++ + '</td>' +
+							'<td style="text-align:center;vertical-align:center">' + user.email + '</td>' +
+							'<td style="text-align:center;vertical-align:center">' + displayRole + '</td>' +
+							'<td style="text-align:center;vertical-align:center">' +
+								'<button type="button" class="btn btn-warning agtuserview viewdata" data-dataid="' + user.id + '" data-toggle="modal" data-target="#viewModalCenter">View</button> ' +
+								'<button type="button" class="btn btn-info agtgrp editdata" data-dataid="' + user.id + '" data-toggle="modal" data-target="#updateModalCenter">Update</button> ' +
+								'<button type="button" class="btn btn-danger deletedata" data-dataid="' + user.id + '" data-toggle="modal" data-target="#deleteModalCenter">Delete</button>' +
+							'</td>' +
+							'</tr>';
+						userBody.append(row);
+					});
+				}
+				// Reinitialize DataTables after AJAX load
+				if ($.fn.DataTable.isDataTable('#exampleuser')) {
+					$('#exampleuser').DataTable().destroy();
+				}
+				$('#exampleuser').DataTable({
+					"bSort": true,
+					"aaSorting": [],
+					"bSearchable": true,
+					"bFilter": true,
+					"pageLength": 10,
+					"responsive": true
+				});
+			},
+			error: function() {
+				console.log('Error loading users data');
+			}
+		});
+	}
+
+	// Initialize DataTables for users table if it exists and already has data
+	var usersTable = $('#exampleuser');
+	if (usersTable.length && usersTable.find('tbody tr').length > 0) {
+		usersTable.DataTable({
+			"bSort": true,
+			"aaSorting": [],
+			"bSearchable": true,
+			"bFilter": true,
+			"pageLength": 10,
+			"responsive": true
+		});
+	}
+
+	// Initialize DataTables for agent table if it exists
+	var agentTable = $('#exampleagent');
+	if (agentTable.length) {
+		agentTable.DataTable({
+			"bSort": true,
+			"aaSorting": [],
+			"bSearchable": true,
+			"bFilter": true,
+			"pageLength": 10,
+			"responsive": true
+		});
+	}
+
+	// Generic DataTable for all tables with class 'table'
+	$('table.table').not('#exampleuser, #exampleagent').DataTable({
+		"bSort": true,
+		"aaSorting": [],
+		"bSearchable": true,
+		"bFilter": true,
+		"pageLength": 10,
+		"responsive": true
+	}).destroy();
+});
+</script>
 
 </body>
 

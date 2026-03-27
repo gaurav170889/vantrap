@@ -1,5 +1,12 @@
 
 	
+		<style>
+			.error-msg {
+				color: #dc3545;
+				font-size: 0.875rem;
+			}
+		</style>
+
 		<!--<div class="container-fluid" style="margin-top:50px;">
 			<div class="container">
 				
@@ -23,6 +30,7 @@
 							<button type="button" class="close" data-dismiss="modal" aria-label="Close">
 								<span aria-hidden="true">&times;</span>
 							</button>
+							
 					</div>
 					<form method="POST" id="user_ins_rec">
 						<div class="modal-body">
@@ -31,14 +39,27 @@
 								<label><b>Select Role</b></label>
 								<select class="custom-select" name="role" id="role">
 									<option>Choose...</option>
-									<option value="uagent">Agent</option>
-									<option value="admin">Admin</option>						
+									<option value="uagent">User (Agent)</option>
+									<option value="manager">Manager</option>						
 								</select>
 							<span class="error-msg" id="msg_3"></span>
 							</div>
+
+							<?php if (!empty($companies)): ?>
+							<div class="form-group" id="userCompanyWrap">
+								<label><b>Select Company</b></label>
+								<select class="custom-select" name="company_id" id="user_company_id">
+									<option value="">Choose...</option>
+									<?php foreach ($companies as $company): ?>
+										<option value="<?php echo intval($company['id']); ?>"><?php echo htmlspecialchars($company['name']); ?></option>
+									<?php endforeach; ?>
+								</select>
+								<span class="error-msg" id="msg_7"></span>
+							</div>
+							<?php endif; ?>
 				
 							<div class="form-group" id="roleagent" class="uagent sagent">
-								<label><b>Agent</b></label>
+								<label><b>Agent (Same Company)</b></label>
 								<select class="custom-select" name="agent" id="agent">
 								<option value="" selected>Choose...</option>
 								<!--<option value="1">User</option>
@@ -46,6 +67,24 @@
 								<option value="3">Restaurant</option>-->
 								</select>
 								<span class="error-msg" id="msg_4"></span>
+							</div>
+
+							<div class="form-group" id="managerScopeWrap" style="display:none;">
+								<label><b>Manager Agent Access</b></label>
+								<select class="custom-select" name="manager_scope" id="manager_scope">
+									<option value="all" selected>All Agents in Company</option>
+									<option value="selected">Select Specific Agents</option>
+								</select>
+								<small class="form-text text-muted">Choose if manager can monitor all company agents or only selected agents.</small>
+							</div>
+
+							<div class="form-group" id="managerAgentsWrap" style="display:none;">
+								<label><b>Select Agents for Manager</b></label>
+								<input type="text" id="manager_agent_search" class="form-control mb-2" placeholder="Search agent by name or extension">
+								<select class="custom-select" name="manager_agents[]" id="manager_agents" multiple size="8">
+								</select>
+								<small class="form-text text-muted">Hold Ctrl (Windows) or Cmd (Mac) to select multiple agents.</small>
+								<span class="error-msg" id="msg_6"></span>
 							</div>
 				
 							<div class="form-group">
@@ -58,7 +97,7 @@
 				
 							<div class="form-group">
 								<label><b>Password</b></label>
-								<input type="text" name="loginpass" class="form-control" placeholder="Enter Password">
+								<input type="password" name="loginpass" class="form-control" placeholder="Enter Password">
 								<span class="error-msg" id="msg_2"></span>
 							</div>
 							
@@ -95,15 +134,40 @@
 		<form method="POST" id="temp_update">
 			<div class="modal-body">
 				<div class="form-group">
+					<label><b>Role</b></label>
+					<input type="text" class="form-control" id="upd_role_label" readonly>
+				</div>
+				<div class="form-group">
 					<label><b>Username</b></label>
-					<input type="text" name="loginname" class="form-control" id="upd_1" placeholder="Username">
+					<input type="text" name="loginname" class="form-control" id="upd_1" placeholder="Username" readonly>
 					<span class="error-msg" id="umsg_1"></span>
 			  	</div>
 			  	<div class="form-group">
 					<label><b>Password</b></label>
-					<input type="text" name="loginpass" class="form-control" id="upd_2" placeholder="Password">
+					<input type="password" name="loginpass" class="form-control" id="upd_2" placeholder="Leave blank to keep current password">
 					<span class="error-msg" id="umsg_2"></span>
 			  	</div>
+
+				<div class="form-group" id="upd_manager_scope_wrap" style="display:none;">
+					<label><b>Manager Agent Access</b></label>
+					<select class="custom-select" name="manager_scope" id="upd_manager_scope">
+						<option value="all">All Agents in Company</option>
+						<option value="selected">Select Specific Agents</option>
+					</select>
+				</div>
+
+				<div class="form-group" id="upd_manager_agents_wrap" style="display:none;">
+					<label><b>Managed Agents</b></label>
+					<input type="text" id="upd_manager_agent_search" class="form-control mb-2" placeholder="Search agent by name or extension">
+					<select class="custom-select" name="manager_agents[]" id="upd_manager_agents" multiple size="8"></select>
+					<small class="form-text text-muted">Hold Ctrl (Windows) or Cmd (Mac) to select multiple agents.</small>
+					<span class="error-msg" id="umsg_6"></span>
+				</div>
+
+				<div class="form-group" id="upd_agent_info_wrap" style="display:none;">
+					<label><b>Agent / Extension</b></label>
+					<input type="text" class="form-control" id="upd_agent_info" readonly>
+				</div>
 				<div class="form-group">
 					<input type="hidden" name="dataval" id="upd_6">
 					<span class="error-msg" id="umsg_5"></span>
@@ -142,7 +206,7 @@
 			  	</div>
 			  	<div class="form-group">
 					<label><b>Agent Ext</b></label>
-					<input type="text" name="loginpass" class="form-control" id="vpd_2" readonly ">
+					<textarea name="loginpass" class="form-control" id="vpd_2" rows="4" readonly></textarea>
 					
 			  	</div>
 				<div class="form-group">
@@ -192,6 +256,7 @@
 						<div class="col-auto d-none d-sm-block">
 							<button type="button" class="btn btn-lg btn-primary" id="add_user" data-toggle="modal" data-target="#exampleModalCenter" >Add User</button>
 						</div>
+						
 							<!--<div class="col-lg-12">
 					<button type="button" class="btn btn-lg btn-primary" id="add_user" data-toggle="modal" data-target="#exampleModalCenter" >Add User</button>	
 					</div>-->
@@ -217,25 +282,7 @@
 						</tr>
 					</thead>
 					<tbody>
-						<?php if(!empty($data)): ?>
-
-						<?php foreach($data as $userdata): ?>
-
-						<tr>
-							<td style="text-align:center;vertical-align:center"><?php echo $counter; $counter++; ?></td>
-							<td style="text-align:center;vertical-align:center"><?php echo $userdata['email']; ?></td>
-							<td style="text-align:center;vertical-align:center"><?php echo $userdata['role']; ?></td>
-					  
-							<td style="text-align:center;vertical-align:center"><button type="button" class="btn btn-warning agtuserview viewdata" data-dataid="<?php echo $userdata['id']; ?>" data-toggle="modal" data-target="#viewModalCenter">View</button>
-							<button type="button" class="btn btn-info agtgrp editdata" data-dataid="<?php echo $userdata['id']; ?>" data-toggle="modal" data-target="#updateModalCenter">Update</button>
-							<button type="button" class="btn btn-danger deletedata" data-dataid="<?php echo $userdata['id']; ?>" data-toggle="modal" data-target="#deleteModalCenter">Delete</button></td>
-						</tr>
-
-					<?php endforeach;?>
-
-					<?php endif; ?> 
-					</tbody>
-				   
+					<!-- Data loaded via AJAX from footer_1.php -->
 				</table>
 		</div>
 

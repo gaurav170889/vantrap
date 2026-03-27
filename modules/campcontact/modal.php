@@ -14,6 +14,95 @@ Class Campcontact_modal{
 		$form_data = mysqli_real_escape_string($this->conn, trim(strip_tags($form_data)));
 		return $form_data;
 	}
+
+    private function hasColumn($table, $column)
+    {
+        $table = preg_replace('/[^a-zA-Z0-9_]/', '', $table);
+        $column = preg_replace('/[^a-zA-Z0-9_]/', '', $column);
+        $sql = "SHOW COLUMNS FROM `$table` LIKE '$column'";
+        $res = mysqli_query($this->conn, $sql);
+        return ($res && mysqli_num_rows($res) > 0);
+    }
+
+    private function getCurrentUserAgentScope()
+    {
+        $role = $_SESSION['erole'] ?? $_SESSION['role'] ?? '';
+        $userId = isset($_SESSION['zid']) ? intval($_SESSION['zid']) : 0;
+
+        if ($userId <= 0) {
+            return ['mode' => 'all', 'agent_ids' => []];
+        }
+
+        if ($role === 'uagent') {
+            $sql = "SELECT agentid FROM users WHERE id = $userId LIMIT 1";
+            $res = mysqli_query($this->conn, $sql);
+            if ($res && mysqli_num_rows($res) > 0) {
+                $row = mysqli_fetch_assoc($res);
+                $agentId = intval($row['agentid'] ?? 0);
+                if ($agentId > 0) {
+                    return ['mode' => 'single', 'agent_ids' => [$agentId]];
+                }
+            }
+            return ['mode' => 'none', 'agent_ids' => []];
+        }
+
+        if ($role === 'company_admin' || $role === 'manager') {
+            if (!$this->hasColumn('users', 'manager_agent_mode') || !$this->hasColumn('users', 'managed_agent_ids')) {
+                return ['mode' => 'all', 'agent_ids' => []];
+            }
+
+            $sql = "SELECT manager_agent_mode, managed_agent_ids FROM users WHERE id = $userId LIMIT 1";
+            $res = mysqli_query($this->conn, $sql);
+            if (!$res || mysqli_num_rows($res) === 0) {
+                return ['mode' => 'all', 'agent_ids' => []];
+            }
+
+            $row = mysqli_fetch_assoc($res);
+            $mode = ($row['manager_agent_mode'] ?? 'all') === 'selected' ? 'selected' : 'all';
+            if ($mode !== 'selected') {
+                return ['mode' => 'all', 'agent_ids' => []];
+            }
+
+            $ids = [];
+            $decoded = json_decode((string)($row['managed_agent_ids'] ?? ''), true);
+            if (is_array($decoded)) {
+                foreach ($decoded as $id) {
+                    $id = intval($id);
+                    if ($id > 0) {
+                        $ids[] = $id;
+                    }
+                }
+            }
+            $ids = array_values(array_unique($ids));
+            if (empty($ids)) {
+                return ['mode' => 'none', 'agent_ids' => []];
+            }
+            return ['mode' => 'selected', 'agent_ids' => $ids];
+        }
+
+        return ['mode' => 'all', 'agent_ids' => []];
+    }
+
+    private function buildAgentScopeWhere($alias = 'c')
+    {
+        $scope = $this->getCurrentUserAgentScope();
+        $alias = trim($alias) === '' ? '' : trim($alias) . '.';
+
+        if ($scope['mode'] === 'none') {
+            return " AND 1=0";
+        }
+
+        if (($scope['mode'] === 'single' || $scope['mode'] === 'selected') && !empty($scope['agent_ids'])) {
+            $ids = array_map('intval', $scope['agent_ids']);
+            $ids = array_filter($ids, function($v){ return $v > 0; });
+            if (empty($ids)) {
+                return " AND 1=0";
+            }
+            return " AND {$alias}agent_connected IN (" . implode(',', $ids) . ")";
+        }
+
+        return "";
+    }
 	
 	public function deletecontacts()
 	{
@@ -106,11 +195,13 @@ Class Campcontact_modal{
 
         $values = [];
         if ($type === 'agent') {
+                        $agentScopeWhere = $this->buildAgentScopeWhere('c');
             $query = "SELECT DISTINCT c.agent_connected, a.agent_name
                       FROM campaignnumbers c
                       LEFT JOIN agent a ON c.agent_connected = a.agent_id
                                             WHERE c.campaignid = $campaign_id
                                                 $contactCompanyWhere
+                                                $agentScopeWhere
                         AND c.agent_connected IS NOT NULL
                         AND c.agent_connected <> ''
                       ORDER BY a.agent_name ASC";
@@ -174,23 +265,7 @@ Class Campcontact_modal{
              return json_encode([]);
          }
          
-         // Filter for agents only
-         if (isset($_SESSION['erole']) && $_SESSION['erole'] == 'uagent') {
-             $zid = $_SESSION['zid'];
-             $u_query = "SELECT agentid FROM users WHERE id = '$zid'";
-             $u_res = mysqli_query($this->conn, $u_query);
-             $agent_id = 0;
-             if ($u_res && mysqli_num_rows($u_res) > 0) {
-                 $u_row = mysqli_fetch_assoc($u_res);
-                 $agent_id = $u_row['agentid'];
-             }
-             
-             if ($agent_id) {
-                 $where .= " AND c.agent_connected = '$agent_id'";
-             } else {
-                 $where .= " AND 1=0"; 
-             }
-         }
+         $where .= $this->buildAgentScopeWhere('c');
 
          $filter_type = strtolower(trim((string)$filter_type));
          if ($filter_type !== '' && $filter_value !== '') {

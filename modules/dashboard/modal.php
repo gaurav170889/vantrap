@@ -72,9 +72,35 @@ Class Dashboard_modal{
 		}
 
 	}
-	public function pointone($tablename,$point)
+	public function pointone($tablename,$point, $company_id = null)
 	{
-		$sql = "SELECT COUNT(point) FROM $tablename WHERE point = '$point' && start_date = curdate()";
+		$where = "point = '$point' AND start_date = curdate()";
+		if ($company_id !== null) {
+			$company_id = intval($company_id);
+			$where .= " AND company_id = $company_id";
+		}
+		$sql = "SELECT COUNT(point) FROM $tablename WHERE $where";
+		$search_query = @mysqli_query($this->conn, $sql);
+		if (!$search_query) return false;
+		if(mysqli_num_rows($search_query) > 0){
+			$search_fetch = mysqli_fetch_array($search_query);
+			return $search_fetch;
+		}
+		elseif(mysqli_num_rows($search_query) == 0){
+			return $search_query;
+		}
+		else{
+			return false;
+		}
+	}
+	public function pointthree($tablename,$point, $company_id = null)
+	{
+		$where = "point = '$point' AND start_date = curdate()";
+		if ($company_id !== null) {
+			$company_id = intval($company_id);
+			$where .= " AND company_id = $company_id";
+		}
+		$sql = "SELECT COUNT(point) FROM $tablename WHERE $where";
 		$search_query = @mysqli_query($this->conn, $sql);
 		if (!$search_query) return false;
 		if(mysqli_num_rows($search_query) > 0){
@@ -90,9 +116,14 @@ Class Dashboard_modal{
 		}
 
 	}
-	public function pointthree($tablename,$point)
+	public function pointfive($tablename,$point, $company_id = null)
 	{
-		$sql = "SELECT COUNT(point) FROM $tablename WHERE point = '$point' && start_date = curdate()";
+		$where = "point = '$point' AND start_date = curdate()";
+		if ($company_id !== null) {
+			$company_id = intval($company_id);
+			$where .= " AND company_id = $company_id";
+		}
+		$sql = "SELECT COUNT(point) FROM $tablename WHERE $where";
 		$search_query = @mysqli_query($this->conn, $sql);
 		if (!$search_query) return false;
 		if(mysqli_num_rows($search_query) > 0){
@@ -100,17 +131,20 @@ Class Dashboard_modal{
 			return $search_fetch;
 		}
 		elseif(mysqli_num_rows($search_query) == 0){
-			//$serch_fetch = mysqli_fetch_all($search_query, MYSQLI_ASSOC);
 			return $search_query;
 		}
 		else{
 			return false;
 		}
-
 	}
-	public function pointfive($tablename,$point)
+	public function totalcallpoint($tablename, $company_id = null)
 	{
-		$sql = "SELECT COUNT(point) FROM $tablename WHERE point = '$point' && start_date = curdate()";
+		$where = "start_date = curdate()";
+		if ($company_id !== null) {
+			$company_id = intval($company_id);
+			$where .= " AND company_id = $company_id";
+		}
+		$sql= "SELECT COUNT(point) FROM $tablename WHERE $where";
 		$search_query = @mysqli_query($this->conn, $sql);
 		if (!$search_query) return false;
 		if(mysqli_num_rows($search_query) > 0){
@@ -118,37 +152,22 @@ Class Dashboard_modal{
 			return $search_fetch;
 		}
 		elseif(mysqli_num_rows($search_query) == 0){
-			//$serch_fetch = mysqli_fetch_all($search_query, MYSQLI_ASSOC);
 			return $search_query;
 		}
 		else{
 			return false;
 		}
-
 	}
-	public function totalcallpoint($tablename)
-	{
-		$sql= "SELECT COUNT(point) FROM $tablename WHERE start_date = curdate()";
-		$search_query = @mysqli_query($this->conn, $sql);
-		if (!$search_query) return false;
-		if(mysqli_num_rows($search_query) > 0){
-			$search_fetch = mysqli_fetch_array($search_query);
-			return $search_fetch;
-		}
-		elseif(mysqli_num_rows($search_query) == 0){
-			//$serch_fetch = mysqli_fetch_all($search_query, MYSQLI_ASSOC);
-			return $search_query;
-		}
-		else{
-			return false;
-		}
-
-	}
-	public function averagescore($tablename)
+	public function averagescore($tablename, $company_id = null)
 	{
 		$data = [];
 		$id=1;
-        $query = "SELECT a.agent_ext,sum(CAST(r.point AS UNSIGNED))'total_point',ROUND(AVG(CAST(r.point AS UNSIGNED)))'avg_point',COUNT(r.point)'total_calls',COUNT(r.agentno)'total',CONCAT(FORMAT(COUNT(r.point)*100/COUNT(r.agentno),2), '%') AS `percent_grade`,CONCAT(FORMAT(100-COUNT(r.point)*100/COUNT(r.agentno),2), '%') AS `percent_not_grade` FROM agent a LEFT JOIN $tablename r ON a.agent_ext = r.agentno AND r.start_date WHERE r.start_date>= CURDATE() AND r.start_date<= CURDATE() GROUP BY a.agent_ext ORDER BY ROUND(AVG(CAST(r.point AS UNSIGNED))) DESC";
+		$where = "r.start_date>= CURDATE() AND r.start_date<= CURDATE()";
+		if ($company_id !== null) {
+			$company_id = intval($company_id);
+			$where .= " AND a.company_id = $company_id";
+		}
+        $query = "SELECT a.agent_ext,sum(CAST(r.point AS UNSIGNED))'total_point',ROUND(AVG(CAST(r.point AS UNSIGNED)))'avg_point',COUNT(r.point)'total_calls',COUNT(r.agentno)'total',CONCAT(FORMAT(COUNT(r.point)*100/COUNT(r.agentno),2), '%') AS `percent_grade`,CONCAT(FORMAT(100-COUNT(r.point)*100/COUNT(r.agentno),2), '%') AS `percent_not_grade` FROM agent a LEFT JOIN $tablename r ON a.agent_ext = r.agentno AND r.start_date WHERE $where GROUP BY a.agent_ext ORDER BY ROUND(AVG(CAST(r.point AS UNSIGNED))) DESC";
 		//print_r($query);
         if ($sql = $this->conn->query($query)) {
             while ($row = mysqli_fetch_assoc($sql)) {

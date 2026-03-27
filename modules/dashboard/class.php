@@ -9,25 +9,16 @@ Class Dashboard{
 		include(INCLUDEPATH.'modules/common/navbar_1.php');
 		
 		$date=date("m/d/Y");
-		$point_1=$this->name->pointone("rate","1");
-		//echo $point_1[0];
-		$point_3=$this->name->pointthree("rate","3");
-		//echo $point_3[0];
-		$point_5=$this->name->pointfive("rate","5");
-		$point_all=$this->name->totalcallpoint("rate");
+		$company_id = isset($_SESSION['company_id']) ? intval($_SESSION['company_id']) : null;
 		
-		//echo $point_1[0];
-		//echo $point_3[0];
-		//echo $point_5[0];
-		//echo $po[0];
-		$agentout = $this->name->averagescore("rate");
-		//print_r($agentout);
+		$point_1=$this->name->pointone("rate","1", $company_id);
+		$point_3=$this->name->pointthree("rate","3", $company_id);
+		$point_5=$this->name->pointfive("rate","5", $company_id);
+		$point_all=$this->name->totalcallpoint("rate", $company_id);
+		$agentout = $this->name->averagescore("rate", $company_id);
+		
 		$counter = 1;
 		include("view/index.php");
-		//$agentout = $this->name->agentoutcall("calldetail",'cx_agent');
-		//echo $inbound[0];
-		//print_r($agentout);
-		
 	}
 	
 	public function goga(){

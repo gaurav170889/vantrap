@@ -15,11 +15,16 @@ Class Report_modal{
 		return $form_data;
 	}
 	
-	public function fetch()
+	public function fetch($company_id = null)
     {
         $data = [];
 		$id=1;
-        $query = "SELECT `r_cfdname` AS Total, COUNT(*) AS Times, SEC_TO_TIME(SUM(TIME_TO_SEC(`r_duration`))) AS Minutes,SEC_TO_TIME(SUM(TIME_TO_SEC(`r_totaltime`))) AS TotalMinute,TIME_FORMAT(SEC_TO_TIME(SUM(TIME_TO_SEC(`r_totaltime`)) / COUNT(*) ), '%H:%i:%s') AS AvgConversation FROM custdata WHERE `r_externalno` IS NOT NULL AND `r_externalno` <> '' AND `r_startdt`= CURDATE() AND (`r_cfdname` IS NOT NULL AND `r_cfdname` <> '') GROUP BY `r_cfdname`";
+		$where = "`r_externalno` IS NOT NULL AND `r_externalno` <> '' AND `r_startdt`= CURDATE() AND (`r_cfdname` IS NOT NULL AND `r_cfdname` <> '')";
+		if ($company_id !== null) {
+			$company_id = intval($company_id);
+			$where .= " AND `company_id` = $company_id";
+		}
+        $query = "SELECT `r_cfdname` AS Total, COUNT(*) AS Times, SEC_TO_TIME(SUM(TIME_TO_SEC(`r_duration`))) AS Minutes,SEC_TO_TIME(SUM(TIME_TO_SEC(`r_totaltime`))) AS TotalMinute,TIME_FORMAT(SEC_TO_TIME(SUM(TIME_TO_SEC(`r_totaltime`)) / COUNT(*) ), '%H:%i:%s') AS AvgConversation FROM custdata WHERE $where GROUP BY `r_cfdname`";
 		//print_r($query);
         if ($sql = $this->conn->query($query)) {
             while ($row = mysqli_fetch_assoc($sql)) {
@@ -32,13 +37,18 @@ Class Report_modal{
         return $data;
     }
 
-    public function date_range($start_date, $end_date)
+    public function date_range($start_date, $end_date, $company_id = null)
     {
         $data = [];
 		$id=1;
         if (isset($start_date) && isset($end_date)) {
+			$where = "`r_externalno` IS NOT NULL AND `r_externalno` <> '' AND `r_startdt` >= '$start_date' AND `r_startdt` <= '$end_date' AND (`r_cfdname` IS NOT NULL AND `r_cfdname` <> '')";
+			if ($company_id !== null) {
+				$company_id = intval($company_id);
+				$where .= " AND `company_id` = $company_id";
+			}
 			
-            $query = "SELECT `r_cfdname` AS Total, COUNT(*) AS Times, SEC_TO_TIME(SUM(TIME_TO_SEC(`r_duration`))) AS Minutes,SEC_TO_TIME(SUM(TIME_TO_SEC(`r_totaltime`))) AS TotalMinute,TIME_FORMAT(SEC_TO_TIME(SUM(TIME_TO_SEC(`r_totaltime`)) / COUNT(*) ), '%H:%i:%s') AS AvgConversation FROM custdata WHERE `r_externalno` IS NOT NULL AND `r_externalno` <> '' AND `r_startdt` >= '$start_date' AND `r_startdt` <= '$end_date' AND (`r_cfdname` IS NOT NULL AND `r_cfdname` <> '')  GROUP BY `r_cfdname`";
+            $query = "SELECT `r_cfdname` AS Total, COUNT(*) AS Times, SEC_TO_TIME(SUM(TIME_TO_SEC(`r_duration`))) AS Minutes,SEC_TO_TIME(SUM(TIME_TO_SEC(`r_totaltime`))) AS TotalMinute,TIME_FORMAT(SEC_TO_TIME(SUM(TIME_TO_SEC(`r_totaltime`)) / COUNT(*) ), '%H:%i:%s') AS AvgConversation FROM custdata WHERE $where GROUP BY `r_cfdname`";
             //print_r($query);
 			
 			if ($sql = $this->conn->query($query)) {
@@ -53,13 +63,18 @@ Class Report_modal{
         return $data;
     }
 	
-	public function date_rangetype($start_date, $end_date)
+	public function date_rangetype($start_date, $end_date, $company_id = null)
     {
         $data = [];
 		$id=1;
         if (isset($start_date) && isset($end_date)) {
+			$where = "`r_externalno` IS NOT NULL AND `r_externalno` <> '' AND `r_startdt` >= '$start_date' AND `r_startdt` <= '$end_date' AND (`r_cfdname` IS NOT NULL AND `r_cfdname` <> '')";
+			if ($company_id !== null) {
+				$company_id = intval($company_id);
+				$where .= " AND `company_id` = $company_id";
+			}
 			
-            $query = "SELECT `r_cfdname` AS Total, COUNT(*) AS Times, SEC_TO_TIME(SUM(TIME_TO_SEC(`r_duration`))) AS Minutes,SEC_TO_TIME(SUM(TIME_TO_SEC(`r_totaltime`))) AS TotalMinute,TIME_FORMAT(SEC_TO_TIME(SUM(TIME_TO_SEC(`r_totaltime`)) / COUNT(*) ), '%H:%i:%s') AS AvgConversation FROM custdata WHERE `r_externalno` IS NOT NULL AND `r_externalno` <> '' AND `r_startdt` >= '$start_date' AND `r_startdt` <= '$end_date' AND (`r_cfdname` IS NOT NULL AND `r_cfdname` <> '')  GROUP BY `r_cfdname`";
+            $query = "SELECT `r_cfdname` AS Total, COUNT(*) AS Times, SEC_TO_TIME(SUM(TIME_TO_SEC(`r_duration`))) AS Minutes,SEC_TO_TIME(SUM(TIME_TO_SEC(`r_totaltime`))) AS TotalMinute,TIME_FORMAT(SEC_TO_TIME(SUM(TIME_TO_SEC(`r_totaltime`)) / COUNT(*) ), '%H:%i:%s') AS AvgConversation FROM custdata WHERE $where GROUP BY `r_cfdname`";
            // print_r($query);
 			if ($sql = $this->conn->query($query)) {
                 while ($row = mysqli_fetch_assoc($sql)) {

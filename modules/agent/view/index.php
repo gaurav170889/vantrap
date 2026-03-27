@@ -43,6 +43,15 @@
 									<td>
 										<a href="javascript:void(0)" class="text-primary update_record" id="<?php echo $row['agent_id']; ?>" title="Edit"><i data-feather="edit"></i></a>
 										<a href="javascript:void(0)" class="text-danger delete_record" id="<?php echo $row['agent_id']; ?>" title="Delete"><i data-feather="trash-2"></i></a>
+										<?php if (empty($row['has_portal_login'])): ?>
+											<button type="button" class="btn btn-sm btn-outline-primary ml-2 create-login-btn"
+												data-agent-id="<?php echo intval($row['agent_id']); ?>"
+												data-agent-name="<?php echo htmlspecialchars($row['agent_name']); ?>">
+												Create Login
+											</button>
+										<?php else: ?>
+											<span class="badge badge-success ml-2">Login Created</span>
+										<?php endif; ?>
 									</td>
 								</tr>
 								<?php 
@@ -104,6 +113,43 @@
 					<div class="modal-footer">
 						<button type="button" class="btn btn-secondary" id="close_click" data-dismiss="modal">Close</button>
 						<button type="submit" class="btn btn-primary" >Add Record</button>
+					</div>
+				</form>
+			</div>
+		</div>
+	</div>
+
+	<div class="modal fade" id="createAgentLoginModal" tabindex="-1" role="dialog" aria-hidden="true">
+		<div class="modal-dialog modal-dialog-centered" role="document">
+			<div class="modal-content">
+				<div class="modal-header">
+					<h5 class="modal-title">Create Agent Portal Login</h5>
+					<button type="button" class="close" data-dismiss="modal" aria-label="Close">
+						<span aria-hidden="true">&times;</span>
+					</button>
+				</div>
+				<form id="agent_login_form" method="POST">
+					<div class="modal-body">
+						<input type="hidden" name="agent_id" id="login_agent_id">
+						<div class="form-group">
+							<label><b>Agent</b></label>
+							<input type="text" id="login_agent_name" class="form-control" readonly>
+						</div>
+						<div class="form-group">
+							<label><b>Username</b></label>
+							<input type="text" name="loginname" id="login_username" class="form-control" required>
+						</div>
+						<div class="form-group">
+							<label><b>Password</b></label>
+							<input type="password" name="loginpass" id="login_password" class="form-control" required>
+						</div>
+						<div class="form-group mb-0">
+							<span class="error-msg" id="agent_login_msg"></span>
+						</div>
+					</div>
+					<div class="modal-footer">
+						<button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+						<button type="submit" class="btn btn-primary">Create Login</button>
 					</div>
 				</form>
 			</div>
@@ -191,6 +237,38 @@
 
 <script>
 $(document).ready(function() {
+	$(document).on('click', '.create-login-btn', function() {
+		$('#agent_login_msg').text('');
+		$('#login_agent_id').val($(this).data('agent-id'));
+		$('#login_agent_name').val($(this).data('agent-name'));
+		$('#login_username').val('');
+		$('#login_password').val('');
+		$('#createAgentLoginModal').modal('show');
+	});
+
+	$('#agent_login_form').on('submit', function(e) {
+		e.preventDefault();
+		$('#agent_login_msg').text('');
+		$.ajax({
+			url: 'agent/createportallogin',
+			type: 'POST',
+			data: $(this).serialize(),
+			dataType: 'json',
+			success: function(response) {
+				if (response.status == 101) {
+					$('#createAgentLoginModal').modal('hide');
+					alert(response.msg || 'Portal login created.');
+					location.reload();
+				} else {
+					$('#agent_login_msg').text(response.msg || 'Unable to create login.');
+				}
+			},
+			error: function() {
+				$('#agent_login_msg').text('Server error while creating login.');
+			}
+		});
+	});
+
     $('#sync_3cx_btn').on('click', function() {
         var btn = $(this);
         btn.prop('disabled', true).text('Syncing...');

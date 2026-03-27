@@ -32,6 +32,12 @@ Class Agent{
 					echo "<main class='content'><div class='container-fluid'><div class='alert alert-danger'>Error: No company_id in session. Please log in again.</div></div></main>";
 				} else {
 					$data = $this->modal->select("agent", $company_id);
+					if (is_array($data)) {
+						foreach ($data as &$agentRow) {
+							$agentRow['has_portal_login'] = $this->modal->agentHasPortalLogin($agentRow['agent_id'] ?? 0, $company_id);
+						}
+						unset($agentRow);
+					}
 					$group = $this->modal->groupassoc("agentgroup");
 					$counter = 1;
 					include(__DIR__ . "/view/index.php");
@@ -507,6 +513,62 @@ Class Agent{
         }
         echo json_encode($json);
     }
+
+	public function createportallogin()
+	{
+		$json = ['status' => 0, 'msg' => 'Invalid request'];
+		if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+			echo json_encode($json);
+			return;
+		}
+
+		$company_id = isset($_SESSION['company_id']) ? intval($_SESSION['company_id']) : 0;
+		if ($company_id <= 0) {
+			$json['msg'] = 'Company scope missing. Please login again.';
+			echo json_encode($json);
+			return;
+		}
+
+		$agent_id = isset($_POST['agent_id']) ? intval($_POST['agent_id']) : 0;
+		$username = isset($_POST['loginname']) ? $this->modal->htmlvalidation($_POST['loginname']) : '';
+		$password = isset($_POST['loginpass']) ? $this->modal->htmlvalidation($_POST['loginpass']) : '';
+
+		if ($agent_id <= 0 || $username === '' || $password === '') {
+			$json['msg'] = 'Please provide agent, username and password.';
+			echo json_encode($json);
+			return;
+		}
+
+		$agentCheck = $this->modal->select_assoc('agent', ['agent_id' => $agent_id, 'company_id' => $company_id]);
+		if (!$agentCheck) {
+			$json['msg'] = 'Agent not found in your company.';
+			echo json_encode($json);
+			return;
+		}
+
+		if ($this->modal->agentHasPortalLogin($agent_id, $company_id)) {
+			$json['status'] = 101;
+			$json['msg'] = 'Portal login already exists for this agent.';
+			echo json_encode($json);
+			return;
+		}
+
+		if ($this->modal->usernameExists($username)) {
+			$json['msg'] = 'Username already exists. Please choose another.';
+			echo json_encode($json);
+			return;
+		}
+
+		$inserted = $this->modal->createPortalLoginForAgent($agent_id, $company_id, $username, password_hash($password, PASSWORD_DEFAULT));
+		if ($inserted) {
+			$json['status'] = 101;
+			$json['msg'] = 'Portal login created successfully.';
+		} else {
+			$json['msg'] = 'Failed to create portal login.';
+		}
+
+		echo json_encode($json);
+	}
 
 	public function check()
 	{
