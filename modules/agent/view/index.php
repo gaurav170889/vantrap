@@ -11,7 +11,7 @@
 			<div class="row">
 				<div class="col-lg-12">
 					<div class="table-responsive">
-						<table class="table table-bordered table-striped">
+						<table id="exampleagent" class="table table-bordered table-striped">
 							<thead>
 								<tr>
 									<th width="5%"><input type="checkbox" id="select_all"></th>
@@ -24,7 +24,7 @@
 									<th>Action</th>
 								</tr>
 							</thead>
-							<tbody>
+							<tbody id="tbl_rec">
 								<?php 
 								if($data) {
 									$i = 1;
