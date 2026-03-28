@@ -186,7 +186,7 @@ Class Agent_modal{
 	public function select($tblname, $company_id = null){
 		
 		$where = "";
-		if($company_id !== null) {
+		if($company_id !== null && $this->hasColumn($tblname, 'company_id')) {
 			$where = " WHERE company_id = $company_id";
 		}
 		$select = "SELECT * FROM $tblname" . $where;
