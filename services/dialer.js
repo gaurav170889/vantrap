@@ -340,6 +340,31 @@ async function releasePhoneLock(lockToken) {
     await db.execute(`DELETE FROM active_phone_locks WHERE lock_token=?`, [lockToken]);
 }
 
+async function getAgentExtensionById(companyId, agentId) {
+    const normalizedAgentId = Number.parseInt(String(agentId || ''), 10);
+    if (!Number.isFinite(normalizedAgentId) || normalizedAgentId <= 0) {
+        return null;
+    }
+
+    const [rows] = await db.execute(
+        `SELECT agent_id, agent_ext
+         FROM agent
+         WHERE company_id=? AND agent_id=?
+         LIMIT 1`,
+        [companyId, normalizedAgentId]
+    );
+
+    if (!rows.length) return null;
+
+    const agentExt = String(rows[0].agent_ext || '').trim();
+    if (!agentExt) return null;
+
+    return {
+        agentId: Number(rows[0].agent_id),
+        agentExt
+    };
+}
+
 // ------------ Queue Logic: Pick & Lock ------------
 async function pickLead(companyId, campaignId) {
     const lockToken = uuidv4();
@@ -410,6 +435,60 @@ async function pickLead(companyId, campaignId) {
         affectedRows: affected,
         changedRows: changed,
         persistedLock
+    });
+
+    return { ...lead, lockToken };
+}
+
+async function pickScheduledLead(companyId, campaignId) {
+    const lockToken = uuidv4();
+
+    const [rows] = await db.execute(
+        `SELECT id, phone_e164, phone_raw, attempts_used, max_attempts, agent_connected, next_call_at
+         FROM campaignnumbers
+         WHERE company_id=? AND campaignid=?
+           AND state='SCHEDULED'
+           AND is_dnc=0
+           AND attempts_used < max_attempts
+           AND next_call_at IS NOT NULL
+           AND next_call_at <= NOW()
+           AND (locked_at IS NULL OR locked_at < DATE_SUB(NOW(), INTERVAL 2 MINUTE))
+         ORDER BY next_call_at ASC, priority ASC, id ASC
+         LIMIT 1`,
+        [companyId, campaignId]
+    );
+
+    if (!rows.length) return null;
+    const lead = rows[0];
+
+    const [res] = await db.execute(
+        `UPDATE campaignnumbers
+         SET locked_at=NOW(), locked_by=?, lock_token=?, state='DIALING'
+         WHERE id=? AND company_id=?
+           AND state='SCHEDULED'
+           AND (locked_at IS NULL OR locked_at < DATE_SUB(NOW(), INTERVAL 2 MINUTE))`,
+        [WORKER_ID, lockToken, lead.id, companyId]
+    );
+
+    const affected = Number(res?.affectedRows || 0);
+    if (affected === 0) {
+        log(`[Camp ${campaignId}] Scheduled lead ${lead.id} lock failed.`, {
+            companyId,
+            campaignId,
+            leadId: lead.id,
+            worker: WORKER_ID
+        });
+        return null;
+    }
+
+    log(`[Camp ${campaignId}] Scheduled lead ${lead.id} locked for dialing.`, {
+        companyId,
+        campaignId,
+        leadId: lead.id,
+        worker: WORKER_ID,
+        lockToken,
+        nextCallAt: lead.next_call_at,
+        agentConnected: lead.agent_connected || null
     });
 
     return { ...lead, lockToken };
@@ -588,7 +667,7 @@ async function globalMonitorTick() {
                                     [agentId, lead.id, companyId]
                                 );
                                 await db.execute(
-                                    `UPDATE dialer_call_log SET agent_id=?, status='ANSWERED' WHERE call_id=? AND company_id=?`,
+                                    `UPDATE dialer_call_log SET agent_id=?, call_status='ANSWERED' WHERE call_id=? AND company_id=?`,
                                     [agentId, originalCallId, companyId]
                                 );
                             }
@@ -696,6 +775,135 @@ async function spawnCallFlow(c, lead, queueDn, dialerDn) {
     }
 }
 
+async function markScheduledNoAnswer(c, lead, callId, agentId = null) {
+    await logCallAttemptV2(
+        c.company_id,
+        c.id,
+        lead.id,
+        callId || 'failed',
+        'NO_ANSWER',
+        6,
+        agentId,
+        lead.attempts_used + 1
+    );
+    await unlockLead(c.company_id, lead.id, 'DISPO_REQUIRED');
+    await releasePhoneLock(lead.lockToken).catch(() => { });
+}
+
+async function spawnScheduledCallFlow(c, lead, queueDn, dialerDn) {
+    let phoneLockAcquired = false;
+    try {
+        const { pbxurl, token } = await getPbxTokenByCompany(c.company_id);
+        const customerDestination = String(lead.phone_e164 || lead.phone_raw || '').trim();
+
+        if (!customerDestination) {
+            log(`[Camp ${c.id}] Scheduled lead ${lead.id} has no phone format. Marking invalid.`);
+            await unlockLead(c.company_id, lead.id, 'INVALID');
+            await releasePhoneLock(lead.lockToken).catch(() => { });
+            return;
+        }
+
+        const phoneLock = await tryAcquirePhoneLock(c.company_id, c.id, lead.id, lead.phone_e164, lead.phone_raw, lead.lockToken);
+        if (!phoneLock.ok) {
+            if (phoneLock.reason === 'invalid_phone') {
+                log(`[Camp ${c.id}] Scheduled lead ${lead.id} has invalid phone format. Marking invalid.`);
+                await unlockLead(c.company_id, lead.id, 'INVALID');
+            } else {
+                log(`[Camp ${c.id}] Scheduled lead ${lead.id} skipped; phone already locked (${phoneLock.phoneKey}).`);
+                await unlockLead(c.company_id, lead.id, 'SCHEDULED');
+            }
+            return;
+        }
+        phoneLockAcquired = true;
+
+        let firstDestination = '';
+        let answeredAgentId = null;
+        let targetLabel = '';
+        const assignedAgent = await getAgentExtensionById(c.company_id, lead.agent_connected);
+
+        if (assignedAgent) {
+            firstDestination = assignedAgent.agentExt;
+            answeredAgentId = assignedAgent.agentId;
+            targetLabel = `agent ${assignedAgent.agentExt}`;
+        } else if (queueDn) {
+            firstDestination = queueDn;
+            targetLabel = `queue ${queueDn}`;
+        } else {
+            log(`[Camp ${c.id}] Scheduled lead ${lead.id} has no assigned agent and no queue fallback.`);
+            await unlockLead(c.company_id, lead.id, 'SCHEDULED');
+            await releasePhoneLock(lead.lockToken).catch(() => { });
+            return;
+        }
+
+        if (String(c.outbound_prefix || '').toLowerCase() === 'yes') {
+            try {
+                const rotatedDid = await rotateDidForCampaignIfConfigured({
+                    companyId: c.company_id,
+                    campaignId: c.id,
+                    pbxurl,
+                    token
+                });
+                if (rotatedDid) {
+                    log(`[Camp ${c.id}] Rotated outbound CallerID to ${rotatedDid} for scheduled call.`);
+                }
+            } catch (e) {
+                log(`[Camp ${c.id}] Scheduled DID rotation skipped due to error: ${e.message}`);
+            }
+        }
+
+        log(`[Camp ${c.id}] Scheduled lead ${lead.id} calling ${targetLabel} first, then customer ${customerDestination}.`);
+
+        const callid = await makeCall({
+            pbxurl,
+            token,
+            destination: firstDestination,
+            dialerDn
+        });
+
+        const connected = await waitThenTransfer({
+            pbxurl,
+            token,
+            callid,
+            destination: firstDestination,
+            transferDn: customerDestination,
+            dialerDn
+        });
+
+        if (!connected) {
+            await markScheduledNoAnswer(c, lead, callid, answeredAgentId);
+            return;
+        }
+
+        if (answeredAgentId) {
+            await db.execute(
+                `UPDATE campaignnumbers
+                 SET agent_connected=?
+                 WHERE id=? AND company_id=?`,
+                [answeredAgentId, lead.id, c.company_id]
+            );
+        }
+
+        await logCallAttemptV2(
+            c.company_id,
+            c.id,
+            lead.id,
+            callid,
+            answeredAgentId ? 'ANSWERED' : 'TRANSFERRED',
+            null,
+            answeredAgentId,
+            lead.attempts_used + 1
+        );
+
+        await unlockLead(c.company_id, lead.id, 'DISPO_PENDING');
+    } catch (e) {
+        log(`[Camp ${c.id}] Scheduled Call Error for lead ${lead.id}: ${e.message}`);
+        await unlockLead(c.company_id, lead.id, 'SCHEDULED');
+        if (phoneLockAcquired) {
+            await releasePhoneLock(lead.lockToken).catch(() => { });
+        }
+    }
+}
+
 // ------------ Main Loop ------------
 let isProcessing = false;
 let lastPhoneLockCleanupAt = 0;
@@ -715,7 +923,7 @@ async function tick() {
                     COALESCE(p.outbound_prefix, 'No') AS outbound_prefix
              FROM campaign c
              LEFT JOIN pbxdetail p ON p.company_id = c.company_id
-             WHERE c.status='Running' AND c.is_deleted=0 AND c.dialer_mode IN ('Predictive Dialer','Power Dialer')`
+               WHERE c.status='Running' AND c.is_deleted=0 AND c.dialer_mode IN ('Predictive Dialer','Power Dialer','Scheduled Dialer')`
         );
 
         for (const c of campaigns) {
@@ -723,7 +931,7 @@ async function tick() {
             const dialerDn = String(c.dn_number || DIALER_DN).trim(); // Use campaign DN or default
             const dialerMode = String(c.dialer_mode || "").trim();
 
-            if (!queueDn) continue;
+            if (dialerMode !== 'Scheduled Dialer' && !queueDn) continue;
 
             if (dialerMode === 'Predictive Dialer') {
                 // Check Queue
@@ -764,13 +972,19 @@ async function tick() {
                     }
                     continue;
                 }
+            } else if (dialerMode === 'Scheduled Dialer') {
+                const lead = await pickScheduledLead(c.company_id, c.id);
+                if (!lead) continue;
+
+                spawnScheduledCallFlow(c, lead, queueDn, dialerDn).catch(e => {
+                    log(`[Camp ${c.id}] Unhandled spawnScheduledCallFlow error: ${e.message}`);
+                });
+                continue;
             }
 
-            // Pick Lead
             const lead = await pickLead(c.company_id, c.id);
             if (!lead) continue;
 
-            // Dial as a concurrent task, don't await blocking `waitThenTransfer`
             spawnCallFlow(c, lead, queueDn, dialerDn).catch(e => {
                 log(`[Camp ${c.id}] Unhandled spawnCallFlow error: ${e.message}`);
             });
@@ -783,6 +997,6 @@ async function tick() {
     }
 }
 
-console.log("Dialer Service Started (Predictive + Power)");
+console.log("Dialer Service Started (Predictive + Power + Scheduled)");
 verifyCampaignLockSchema().catch(() => { });
 setInterval(tick, LOOP_MS);
