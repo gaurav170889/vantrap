@@ -87,6 +87,11 @@ Class Dashboard_modal{
 				$end = new DateTime('last day of this month');
 				$label = 'This Month';
 				break;
+			case 'last_month':
+				$start = new DateTime('first day of last month');
+				$end = new DateTime('last day of last month');
+				$label = 'Last Month';
+				break;
 			case 'this_year':
 				$start = new DateTime(date('Y-01-01'));
 				$end = new DateTime(date('Y-12-31'));
@@ -201,6 +206,7 @@ Class Dashboard_modal{
 		$result = [
 			'available' => false,
 			'has_data' => false,
+			'latest_recorded_at' => '',
 			'metrics' => [
 				'attempts' => 0,
 				'unique_numbers' => 0,
@@ -223,6 +229,8 @@ Class Dashboard_modal{
 		$dateExpr = $this->buildDateExpression('dialer_call_log', 'started_at', 'created_at');
 		$dateWhere = "$dateExpr >= '{$range['start']} 00:00:00' AND $dateExpr <= '{$range['end']} 23:59:59'";
 		$companyWhere = $this->buildCompanyWhere('dialer_call_log', $company_id);
+		$latestRow = $this->fetchAssoc("SELECT MAX($dateExpr) AS latest_recorded_at FROM dialer_call_log WHERE 1=1$companyWhere");
+		$result['latest_recorded_at'] = trim((string)($latestRow['latest_recorded_at'] ?? ''));
 		$uniqueExpr = $this->hasColumn('dialer_call_log', 'campaignnumber_id') ?
 			"CAST(campaignnumber_id AS CHAR)" :
 			($this->hasColumn('dialer_call_log', 'caller_id') ? "caller_id" : "call_id");
@@ -281,6 +289,7 @@ Class Dashboard_modal{
 		$result = [
 			'available' => false,
 			'has_data' => false,
+			'latest_recorded_at' => '',
 			'metrics' => [
 				'rated_calls' => 0,
 				'unique_numbers' => 0,
@@ -306,6 +315,8 @@ Class Dashboard_modal{
 		$dateExpr = $this->buildDateExpression('rate', 'created_at', 'start_date');
 		$dateWhere = "$dateExpr >= '{$range['start']} 00:00:00' AND $dateExpr <= '{$range['end']} 23:59:59'";
 		$companyWhere = $this->buildCompanyWhere('rate', $company_id);
+		$latestRow = $this->fetchAssoc("SELECT MAX($dateExpr) AS latest_recorded_at FROM rate WHERE 1=1$companyWhere");
+		$result['latest_recorded_at'] = trim((string)($latestRow['latest_recorded_at'] ?? ''));
 		$agentIdSelect = $this->hasColumn('rate', 'agentid') ? 'agentid' : 'NULL AS agentid';
 		$agentNoSelect = $this->hasColumn('rate', 'agentno') ? 'agentno' : "'' AS agentno";
 		$callerNoSelect = $this->hasColumn('rate', 'callerno') ? 'callerno' : "'' AS callerno";

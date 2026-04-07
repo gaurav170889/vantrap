@@ -69,8 +69,13 @@
                     <?php endif; ?>
 
 					<li class="sidebar-item Dashboard">
-						<a class="sidebar-link" href="<?php echo NAVURL;?>dashboard/">
+						<a class="sidebar-link" href="<?php echo BASE_URL; ?>?route=dashboard/index&view=outbound">
 							<i class="align-middle" data-feather="sliders"></i> <span class="align-middle">Dashboard</span>
+						</a>
+					</li>
+					<li class="sidebar-item RateAnalytics">
+						<a class="sidebar-link" href="<?php echo BASE_URL; ?>?route=dashboard/index&view=rating">
+							<i class="align-middle" data-feather="bar-chart-2"></i> <span class="align-middle">Rate Analytics</span>
 						</a>
 					</li>
 					<!--<li class="sidebar-item Wallboard">
@@ -86,8 +91,10 @@
 					
 					
 					<?php 
-					// Check for Admin privileges
-					$isAdmin = (isset($_SESSION['erole']) && ($_SESSION['erole'] == 'super_admin' || $_SESSION['erole'] == 'company_admin'));
+					// Check current role for sidebar visibility
+					$sessionRole = $_SESSION['erole'] ?? $_SESSION['role'] ?? '';
+					$isAdmin = in_array($sessionRole, ['super_admin', 'company_admin'], true);
+					$isAgentUser = ($sessionRole === 'uagent');
 					?>
 
 					<?php if($isAdmin): ?>
@@ -120,7 +127,8 @@
                             <?php if($isAdmin): ?>
 							<li class="sidebar-item Module"><a class="sidebar-link" href="<?php echo NAVURL;?>campaign/">Module</a></li>
                             <?php endif; ?>
-                            
+
+                            <?php if(!$isAgentUser): ?>
                             <li class="sidebar-item Skipnum"><a class="sidebar-link" href="<?php echo NAVURL;?>campaign/skipped">Skipnum</a></li>
                             
                             <?php if(isset($show_outprefix) && $show_outprefix): ?>
@@ -131,9 +139,14 @@
                             <?php if(isset($_SESSION['erole']) && $_SESSION['erole'] == 'super_admin'): ?>
 							<li class="sidebar-item Importnum"><a class="sidebar-link" href="<?php echo NAVURL;?>campaign/importlog">Importnum</a></li>
                             <?php endif; ?>
-                            
+
+							<li class="sidebar-item NotDialed"><a class="sidebar-link" href="<?php echo NAVURL;?>campaign/notdialed">Not Dialed</a></li>
                             <li class="sidebar-item Campcontact Contacts"><a class="sidebar-link" href="<?php echo NAVURL;?>campcontact/">Contacts</a></li>
                             <li class="sidebar-item Disposition"><a class="sidebar-link" href="<?php echo NAVURL;?>disposition/">Disposition</a></li>
+                            <?php endif; ?>
+
+							<li class="sidebar-item DialedNumber"><a class="sidebar-link" href="<?php echo NAVURL;?>campaign/dialednumbers">Dialed Number</a></li>
+							<li class="sidebar-item ScheduleCall"><a class="sidebar-link" href="<?php echo NAVURL;?>campaign/schedulecalls">Schedule Call</a></li>
 						</ul>
 					</li>
 					
@@ -197,11 +210,13 @@
 						</a>
 					</li>-->
 
+	<?php if(!$isAgentUser): ?>
 	<li class="sidebar-item Settings">
 						<a class="sidebar-link" href="<?php echo NAVURL;?>settings/">
 							<i class="align-middle" data-feather="settings"></i> <span class="align-middle">Settings</span>
 						</a>
 					</li>
+	<?php endif; ?>
 
 					<li class="sidebar-header">
 						Support & Help

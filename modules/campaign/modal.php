@@ -95,6 +95,138 @@ Class Campaign_modal{
 		$form_data = mysqli_real_escape_string($this->conn, trim(strip_tags($form_data)));
 		return $form_data;
 	}
+
+    private function hasColumn($table, $column)
+    {
+        $table = preg_replace('/[^a-zA-Z0-9_]/', '', $table);
+        $column = preg_replace('/[^a-zA-Z0-9_]/', '', $column);
+        $sql = "SHOW COLUMNS FROM `$table` LIKE '$column'";
+        $res = mysqli_query($this->conn, $sql);
+        return ($res && mysqli_num_rows($res) > 0);
+    }
+
+    private function resolveSessionAgentId()
+    {
+        $userId = intval($_SESSION['zid'] ?? 0);
+        if ($userId <= 0) {
+            return 0;
+        }
+
+        $agentByColumn = 0;
+        if ($this->hasColumn('users', 'agentid')) {
+            $res = mysqli_query($this->conn, "SELECT agentid FROM users WHERE id = $userId LIMIT 1");
+            if ($res && mysqli_num_rows($res) > 0) {
+                $row = mysqli_fetch_assoc($res);
+                $agentByColumn = intval($row['agentid'] ?? 0);
+                if ($agentByColumn > 0) {
+                    return $agentByColumn;
+                }
+            }
+        }
+
+        $select = [];
+        if ($this->hasColumn('users', 'userno')) {
+            $select[] = 'userno';
+        }
+        if ($this->hasColumn('users', 'user_id')) {
+            $select[] = 'user_id';
+        }
+        if ($this->hasColumn('users', 'company_id')) {
+            $select[] = 'company_id';
+        }
+        if (empty($select)) {
+            return 0;
+        }
+
+        $res = mysqli_query($this->conn, "SELECT " . implode(', ', $select) . " FROM users WHERE id = $userId LIMIT 1");
+        if (!$res || mysqli_num_rows($res) === 0) {
+            return 0;
+        }
+        $user = mysqli_fetch_assoc($res);
+
+        $companyId = intval($user['company_id'] ?? ($_SESSION['company_id'] ?? 0));
+        $safeCompany = $companyId > 0 ? " AND company_id = $companyId" : '';
+
+        $userNo = trim((string)($user['userno'] ?? ''));
+        if ($userNo !== '') {
+            $safeUserNo = mysqli_real_escape_string($this->conn, $userNo);
+            $aRes = mysqli_query($this->conn, "SELECT agent_id FROM agent WHERE agent_ext = '$safeUserNo' $safeCompany LIMIT 1");
+            if ($aRes && mysqli_num_rows($aRes) > 0) {
+                $aRow = mysqli_fetch_assoc($aRes);
+                $agentId = intval($aRow['agent_id'] ?? 0);
+                if ($agentId > 0) {
+                    return $agentId;
+                }
+            }
+        }
+
+        $user3cxId = intval($user['user_id'] ?? 0);
+        if ($user3cxId > 0) {
+            $aRes = mysqli_query($this->conn, "SELECT agent_id FROM agent WHERE `3cx_id` = $user3cxId $safeCompany LIMIT 1");
+            if ($aRes && mysqli_num_rows($aRes) > 0) {
+                $aRow = mysqli_fetch_assoc($aRes);
+                return intval($aRow['agent_id'] ?? 0);
+            }
+        }
+
+        return 0;
+    }
+
+    private function normalizeImportedPhone($rawNumber)
+    {
+        $rawNumber = trim((string)$rawNumber);
+        if ($rawNumber === '') {
+            return '';
+        }
+
+        $hasLeadingPlus = (strpos($rawNumber, '+') === 0);
+        $digitsOnly = preg_replace('/\D+/', '', $rawNumber);
+        if ($digitsOnly === '') {
+            return '';
+        }
+
+        return $hasLeadingPlus ? ('+' . $digitsOnly) : $digitsOnly;
+    }
+
+    private function resolveImportedSchedule($schDate, $schTime)
+    {
+        $schDate = trim((string)$schDate);
+        $schTime = trim((string)$schTime);
+
+        if ($schDate === '' && $schTime === '') {
+            return ['state' => 'READY', 'next_call_at_sql' => 'NOW()', 'was_past' => false];
+        }
+
+        if (preg_match('/^(\d{2})-(\d{2})-(\d{4})$/', $schDate, $matches)) {
+            $schDate = $matches[3] . '-' . $matches[2] . '-' . $matches[1];
+        }
+
+        if ($schDate === '' || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $schDate)) {
+            return ['state' => 'READY', 'next_call_at_sql' => 'NOW()', 'was_past' => false];
+        }
+
+        if ($schTime === '') {
+            $schTime = '09:00:00';
+        } elseif (preg_match('/^\d{2}:\d{2}$/', $schTime)) {
+            $schTime .= ':00';
+        }
+
+        $timestamp = strtotime($schDate . ' ' . $schTime);
+        if ($timestamp === false) {
+            return ['state' => 'READY', 'next_call_at_sql' => 'NOW()', 'was_past' => false];
+        }
+
+        $dateTimeValue = date('Y-m-d H:i:s', $timestamp);
+        if ($timestamp < time()) {
+            return ['state' => 'READY', 'next_call_at_sql' => 'NOW()', 'was_past' => true];
+        }
+
+        return [
+            'state' => 'SCHEDULED',
+            'next_call_at_sql' => "'" . mysqli_real_escape_string($this->conn, $dateTimeValue) . "'",
+            'was_past' => false
+        ];
+    }
 	
 	public function updatestatus($id, $status) 
 	{
@@ -200,6 +332,9 @@ Class Campaign_modal{
     {
         $insertCount = 0;
         $skippedCount = 0;
+        $normalizedCount = 0;
+        $invalidCount = 0;
+        $pastScheduleAdjusted = 0;
         $campaignId = intval($campaignId);
         
         // Fetch Campaign Info (Max Attempts & Company ID)
@@ -236,7 +371,17 @@ Class Campaign_modal{
                 }
 
                 // Extract fixed fields
-                $number = mysqli_real_escape_string($this->conn, $row['number'] ?? '');
+                $rawNumber = $row['number'] ?? '';
+                $normalizedNumber = $this->normalizeImportedPhone($rawNumber);
+                if (trim((string)$rawNumber) !== '' && $normalizedNumber !== trim((string)$rawNumber)) {
+                    $normalizedCount++;
+                }
+                if ($normalizedNumber === '') {
+                    $invalidCount++;
+                    continue;
+                }
+
+                $number = mysqli_real_escape_string($this->conn, $normalizedNumber);
                 $fname  = mysqli_real_escape_string($this->conn, $row['fname'] ?? '');
                 $lname  = mysqli_real_escape_string($this->conn, $row['lname'] ?? '');
                 $type   = mysqli_real_escape_string($this->conn, $row['type'] ?? '');
@@ -245,35 +390,11 @@ Class Campaign_modal{
                 // Scheduling Logic
                 $schDate = isset($row['scheduled_date']) ? trim($row['scheduled_date']) : '';
                 $schTime = isset($row['scheduled_time']) ? trim($row['scheduled_time']) : '';
-                
-                $state = 'READY';
-                $nextCallAt = "NOW()";
-                
-                // Detect DD-MM-YYYY format and convert to YYYY-MM-DD
-                if (preg_match('/^(\d{2})-(\d{2})-(\d{4})$/', $schDate, $matches)) {
-                    $schDate = $matches[3] . '-' . $matches[2] . '-' . $matches[1];
-                }
-
-                if (!empty($schDate) && !empty($schTime)) {
-                    // Basic validation check? YYYY-MM-DD
-                    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $schDate)) {
-                         $fullTime = $schTime;
-                         if (strlen($fullTime) == 5) $fullTime .= ":00"; // HH:MM -> HH:MM:00
-                         
-                         $state = 'SCHEDULED';
-                         // Escape the datetime string
-                         $dtStr = $schDate . " " . $fullTime;
-                         $nextCallAt = "'" . mysqli_real_escape_string($this->conn, $dtStr) . "'";
-                    }
-                } elseif (!empty($schDate)) {
-                    // Only date? Default to 9am? Or treat as READY? 
-                    // User said "If either is provided -> schedule". 
-                    // Let's assume start of day logic or just keep READY if time missing?
-                    // User said: "If either is provided -> schedule using next_call_at".
-                    // If time missing, maybe default to 09:00:00?
-                    $state = 'SCHEDULED';
-                    $dtStr = $schDate . " 09:00:00";
-                     $nextCallAt = "'" . mysqli_real_escape_string($this->conn, $dtStr) . "'";
+                $scheduleInfo = $this->resolveImportedSchedule($schDate, $schTime);
+                $state = $scheduleInfo['state'];
+                $nextCallAt = $scheduleInfo['next_call_at_sql'];
+                if (!empty($scheduleInfo['was_past'])) {
+                    $pastScheduleAdjusted++;
                 }
 
                 // Extract Extra Data
@@ -326,7 +447,18 @@ Class Campaign_modal{
             fclose($handle);
         }
         
-        return ['success' => true, 'message' => "$insertCount numbers imported. $skippedCount duplicates skipped."];
+        $message = "$insertCount numbers imported. $skippedCount duplicates skipped.";
+        if ($normalizedCount > 0) {
+            $message .= " $normalizedCount number(s) auto-cleaned to valid format.";
+        }
+        if ($pastScheduleAdjusted > 0) {
+            $message .= " $pastScheduleAdjusted past scheduled row(s) were imported as ready contacts.";
+        }
+        if ($invalidCount > 0) {
+            $message .= " $invalidCount invalid/empty number(s) were ignored.";
+        }
+
+        return ['success' => true, 'message' => $message];
     }
 
 
@@ -429,6 +561,175 @@ public function getImportLogs($company_id = null)
         }
     }
     return $data;
+}
+
+public function getNotDialedNumbers($company_id = null)
+{
+    $where = "WHERE cn.is_dnc = 0
+              AND COALESCE(cn.state, '') NOT IN ('DNC', 'CLOSED', 'DISPO_SUBMITTED')
+              AND (
+                    (
+                        cn.attempts_used = 0
+                        AND DATE(cn.created_at) < CURDATE()
+                    )
+                    OR
+                    (
+                        cn.attempts_used > 0
+                        AND (
+                            COALESCE(cn.last_call_status, '') IN ('NO_ANSWER', 'FAILED', 'BUSY', 'CANCELLED', 'UNREACHABLE', 'VOICEMAIL')
+                            OR cn.agent_connected IS NULL
+                            OR TRIM(COALESCE(cn.agent_connected, '')) = ''
+                            OR cn.agent_connected = '0'
+                            OR COALESCE(cn.state, '') IN ('READY', 'NOT_DIALED', 'RETRY', 'DIAL_FAILED')
+                        )
+                    )
+              )";
+
+    if ($company_id !== null) {
+        $company_id = intval($company_id);
+        if ($company_id > 0) {
+            $where .= " AND cn.company_id = $company_id";
+        }
+    }
+
+    $sql = "SELECT cn.id, cn.company_id, cn.campaignid, cn.phone_e164, cn.first_name, cn.last_name,
+                   cn.state, cn.created_at, cn.next_call_at,
+                   c.name AS campaign_name,
+                   co.name AS company_name
+            FROM campaignnumbers cn
+            LEFT JOIN campaign c ON c.id = cn.campaignid
+            LEFT JOIN companies co ON co.id = cn.company_id
+            $where
+            ORDER BY COALESCE(cn.next_call_at, cn.created_at) ASC, cn.id DESC";
+
+    $result = mysqli_query($this->conn, $sql);
+    $data = [];
+    if ($result) {
+        while ($row = mysqli_fetch_assoc($result)) {
+            $data[] = $row;
+        }
+    }
+    return $data;
+}
+
+public function getDialedAnsweredNumbers($company_id = null)
+{
+    $where = "WHERE l.call_status = 'ANSWERED'";
+
+    if ($company_id !== null) {
+        $company_id = intval($company_id);
+        if ($company_id > 0) {
+            $where .= " AND l.company_id = $company_id";
+        }
+    }
+
+    $sql = "SELECT l.id AS log_id, l.company_id, l.campaign_id, l.campaignnumber_id, l.call_id,
+                   l.call_status, l.started_at, l.ended_at, l.duration_sec,
+                   cn.phone_e164, cn.first_name, cn.last_name,
+                   c.name AS campaign_name,
+                   co.name AS company_name,
+                   a.agent_name,
+                   a.agent_ext
+            FROM dialer_call_log l
+            LEFT JOIN campaignnumbers cn ON cn.id = l.campaignnumber_id
+            LEFT JOIN campaign c ON c.id = l.campaign_id
+            LEFT JOIN companies co ON co.id = l.company_id
+            LEFT JOIN agent a ON a.agent_id = l.agent_id
+            $where
+            ORDER BY COALESCE(l.ended_at, l.started_at, l.created_at) DESC";
+
+    $result = mysqli_query($this->conn, $sql);
+    $data = [];
+    if ($result) {
+        while ($row = mysqli_fetch_assoc($result)) {
+            $data[] = $row;
+        }
+    }
+    return $data;
+}
+
+private function syncCompletedScheduledCalls($company_id = null)
+{
+    $whereCompany = '';
+    if ($company_id !== null) {
+        $company_id = intval($company_id);
+        if ($company_id > 0) {
+            $whereCompany = " AND sc.company_id = $company_id";
+        }
+    }
+
+    $sql = "UPDATE scheduled_calls sc
+            INNER JOIN campaignnumbers cn ON cn.id = sc.campaignnumber_id
+            SET sc.status = 'done',
+                sc.completed_at = COALESCE(cn.last_call_ended_at, cn.last_attempt_at, NOW()),
+                sc.updated_at = NOW()
+            WHERE sc.status IN ('pending_agent', 'pending', 'queued', 'scheduled')
+              AND cn.last_attempt_at IS NOT NULL
+              AND cn.last_attempt_at >= sc.scheduled_for
+              AND (cn.state <> 'SCHEDULED' OR cn.next_call_at IS NULL OR cn.next_call_at <> sc.scheduled_for)
+              $whereCompany";
+
+    mysqli_query($this->conn, $sql);
+}
+
+public function getScheduledCalls($company_id = null, $role = '', $sessionAgentId = 0)
+{
+    if (!$this->hasColumn('scheduled_calls', 'id')) {
+        return [];
+    }
+
+    $this->syncCompletedScheduledCalls($company_id);
+
+    $where = "WHERE sc.status IN ('pending_agent', 'pending', 'queued', 'scheduled')";
+
+    if ($company_id !== null) {
+        $company_id = intval($company_id);
+        if ($company_id > 0) {
+            $where .= " AND sc.company_id = $company_id";
+        }
+    }
+
+    $role = strtolower(trim((string)$role));
+    $agentId = intval($sessionAgentId);
+    if ($role === 'uagent') {
+        if ($agentId <= 0) {
+            $agentId = $this->resolveSessionAgentId();
+        }
+        if ($agentId > 0) {
+            $where .= " AND sc.agent_id = $agentId";
+        } else {
+            $where .= " AND 1=0";
+        }
+    }
+
+    $sql = "SELECT sc.id, sc.company_id, sc.campaign_id, sc.campaignnumber_id,
+                   sc.agent_id, sc.agent_ext, sc.scheduled_for, sc.timezone,
+                   sc.status, sc.source_module, sc.disposition_label, sc.note_text,
+                   cn.phone_e164, cn.first_name, cn.last_name,
+                   c.name AS campaign_name,
+                   co.name AS company_name,
+                   a.agent_name
+            FROM scheduled_calls sc
+            LEFT JOIN campaignnumbers cn ON cn.id = sc.campaignnumber_id
+            LEFT JOIN campaign c ON c.id = sc.campaign_id
+            LEFT JOIN companies co ON co.id = sc.company_id
+            LEFT JOIN agent a ON a.agent_id = sc.agent_id
+            $where
+            ORDER BY sc.scheduled_for ASC, sc.id DESC";
+
+    $result = mysqli_query($this->conn, $sql);
+    $data = [];
+    if ($result) {
+        while ($row = mysqli_fetch_assoc($result)) {
+            $data[] = $row;
+        }
+    }
+    return $data;
+}
+
+public function getSessionAgentId()
+{
+    return $this->resolveSessionAgentId();
 }
     public function checkDuplicateCampaign($name, $company_id)
     {

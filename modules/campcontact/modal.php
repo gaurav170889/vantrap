@@ -24,6 +24,118 @@ Class Campcontact_modal{
         return ($res && mysqli_num_rows($res) > 0);
     }
 
+    private function hasTable($table)
+    {
+        $table = preg_replace('/[^a-zA-Z0-9_]/', '', $table);
+        $sql = "SHOW TABLES LIKE '$table'";
+        $res = mysqli_query($this->conn, $sql);
+        return ($res && mysqli_num_rows($res) > 0);
+    }
+
+    private function resolveScheduledDateTime($callbackDate, $callbackTime)
+    {
+        $callbackDate = trim((string)$callbackDate);
+        $callbackTime = trim((string)$callbackTime);
+
+        if ($callbackDate !== '' && $callbackTime !== '') {
+            $timestamp = strtotime($callbackDate . ' ' . $callbackTime);
+            if ($timestamp !== false) {
+                return date('Y-m-d H:i:s', $timestamp);
+            }
+        }
+
+        return date('Y-m-d H:i:s', strtotime('+1 hour'));
+    }
+
+    private function cancelPendingScheduledCalls($companyId, $campaignnumberId, $updatedBy = 0)
+    {
+        if (!$this->hasTable('scheduled_calls')) {
+            return true;
+        }
+
+        $companyId = intval($companyId);
+        $campaignnumberId = intval($campaignnumberId);
+        $updatedExpr = intval($updatedBy) > 0 ? intval($updatedBy) : 'NULL';
+
+        $sql = "UPDATE scheduled_calls
+                SET status = 'cancelled',
+                    cancelled_at = NOW(),
+                    updated_by = $updatedExpr
+                WHERE company_id = $companyId
+                  AND campaignnumber_id = $campaignnumberId
+                  AND status IN ('pending_agent', 'pending', 'queued', 'scheduled')";
+
+        return mysqli_query($this->conn, $sql) !== false;
+    }
+
+    private function insertScheduledCall($contactRow, $disposition, $notes, $actionType, $scheduledFor, $updatedBy = 0)
+    {
+        if (!$this->hasTable('scheduled_calls')) {
+            return ['success' => false, 'error' => 'scheduled_calls table not found'];
+        }
+
+        $companyId = intval($contactRow['company_id'] ?? 0);
+        $campaignId = intval($contactRow['campaignid'] ?? 0);
+        $campaignnumberId = intval($contactRow['id'] ?? 0);
+        $agentId = intval($contactRow['agent_connected'] ?? 0);
+        $agentExt = '';
+
+        if ($agentId > 0 && $this->hasTable('agent')) {
+            $agentQuery = mysqli_query($this->conn, "SELECT agent_ext FROM agent WHERE agent_id = $agentId LIMIT 1");
+            if ($agentQuery && mysqli_num_rows($agentQuery) > 0) {
+                $agentRow = mysqli_fetch_assoc($agentQuery);
+                $agentExt = trim((string)($agentRow['agent_ext'] ?? ''));
+            }
+        }
+
+        $timezone = trim((string)($_SESSION['timezone'] ?? date_default_timezone_get()));
+        $contactName = trim(((string)($contactRow['first_name'] ?? '')) . ' ' . ((string)($contactRow['last_name'] ?? '')));
+        $meta = [
+            'action_type' => strtoupper((string)$actionType),
+            'scheduled_via' => 'disposition_modal',
+            'phone_e164' => (string)($contactRow['phone_e164'] ?? ''),
+            'contact_name' => $contactName
+        ];
+
+        $safeDisposition = mysqli_real_escape_string($this->conn, $disposition);
+        $safeScheduledFor = mysqli_real_escape_string($this->conn, $scheduledFor);
+        $safeTimezone = mysqli_real_escape_string($this->conn, $timezone);
+        $safeNotes = mysqli_real_escape_string($this->conn, $notes);
+        $safeMeta = mysqli_real_escape_string($this->conn, json_encode($meta));
+        $safeAgentExt = mysqli_real_escape_string($this->conn, $agentExt);
+
+        $agentIdSql = $agentId > 0 ? "'$agentId'" : "NULL";
+        $agentExtSql = $agentExt !== '' ? "'$safeAgentExt'" : "NULL";
+        $timezoneSql = $timezone !== '' ? "'$safeTimezone'" : "NULL";
+        $notesSql = trim($notes) !== '' ? "'$safeNotes'" : "NULL";
+        $metaSql = $safeMeta !== '' ? "'$safeMeta'" : "NULL";
+        $updatedBySql = intval($updatedBy) > 0 ? intval($updatedBy) : 'NULL';
+
+        $query = "INSERT INTO scheduled_calls SET
+                    company_id = '$companyId',
+                    campaign_id = '$campaignId',
+                    campaignnumber_id = '$campaignnumberId',
+                    route_type = 'Agent',
+                    queue_dn = NULL,
+                    agent_id = $agentIdSql,
+                    agent_ext = $agentExtSql,
+                    scheduled_for = '$safeScheduledFor',
+                    timezone = $timezoneSql,
+                    status = 'pending_agent',
+                    source_module = 'campcontact',
+                    disposition_label = '$safeDisposition',
+                    note_text = $notesSql,
+                    meta_json = $metaSql,
+                    created_by = $updatedBySql,
+                    updated_by = $updatedBySql";
+
+        if (!mysqli_query($this->conn, $query)) {
+            return ['success' => false, 'error' => mysqli_error($this->conn)];
+        }
+
+        return ['success' => true];
+    }
+
     private function getCurrentUserAgentScope()
     {
         $role = $_SESSION['erole'] ?? $_SESSION['role'] ?? '';
@@ -83,7 +195,7 @@ Class Campcontact_modal{
         return ['mode' => 'all', 'agent_ids' => []];
     }
 
-    private function buildAgentScopeWhere($alias = 'c')
+    private function buildAgentScopeWhere($alias = 'c', $includeUnassigned = false)
     {
         $scope = $this->getCurrentUserAgentScope();
         $alias = trim($alias) === '' ? '' : trim($alias) . '.';
@@ -98,7 +210,13 @@ Class Campcontact_modal{
             if (empty($ids)) {
                 return " AND 1=0";
             }
-            return " AND {$alias}agent_connected IN (" . implode(',', $ids) . ")";
+
+            $condition = "{$alias}agent_connected IN (" . implode(',', $ids) . ")";
+            if ($includeUnassigned && $scope['mode'] === 'selected') {
+                $condition = "($condition OR {$alias}agent_connected IS NULL OR TRIM({$alias}agent_connected) = '' OR {$alias}agent_connected = '0')";
+            }
+
+            return " AND " . $condition;
         }
 
         return "";
@@ -265,7 +383,7 @@ Class Campcontact_modal{
              return json_encode([]);
          }
          
-         $where .= $this->buildAgentScopeWhere('c');
+         $where .= $this->buildAgentScopeWhere('c', true);
 
          $filter_type = strtolower(trim((string)$filter_type));
          if ($filter_type !== '' && $filter_value !== '') {
@@ -480,133 +598,128 @@ Class Campcontact_modal{
 	
 	public function updateDispositionSql($id, $disposition, $notes, $callbackDate, $callbackTime) {
         $id = intval($id);
-        $disposition = mysqli_real_escape_string($this->conn, $disposition);
-        $notes = mysqli_real_escape_string($this->conn, $notes);
-        
-        // Determine State and Next Call
+        $rawDisposition = trim((string)$disposition);
+        $rawNotes = trim((string)$notes);
+
+        if ($id <= 0 || $rawDisposition === '') {
+            return ['success' => false, 'error' => 'Invalid disposition request'];
+        }
+
+        $safeDisposition = mysqli_real_escape_string($this->conn, $rawDisposition);
+        $contactQuery = mysqli_query($this->conn, "SELECT id, notes, company_id, campaignid, agent_connected, phone_e164, first_name, last_name FROM campaignnumbers WHERE id='$id' LIMIT 1");
+        if (!$contactQuery || mysqli_num_rows($contactQuery) === 0) {
+            return ['success' => false, 'error' => 'Contact not found'];
+        }
+        $cnRow = mysqli_fetch_assoc($contactQuery);
+
+        $actionType = 'close';
         $state = 'DISPO_SUBMITTED';
+        $scheduledFor = null;
         $nextCallAt = 'NULL';
 
-        // Fetch Disposition Info
-        $dispQuery = mysqli_query($this->conn, "SELECT code, action_type FROM dialer_disposition_master WHERE label='$disposition' LIMIT 1");
-        if($dispQuery && mysqli_num_rows($dispQuery) > 0){
-             $dRow = mysqli_fetch_assoc($dispQuery);
-             $actionType = strtolower($dRow['action_type']);
-             if($actionType == 'callback' || $actionType == 'retry'){
-                 $state = 'SCHEDULED';
-                 if($callbackDate && $callbackTime){
-                     $nextCallAt = "'".mysqli_real_escape_string($this->conn, "$callbackDate $callbackTime")."'";
-                 } else {
-                     $nextCallAt = "DATE_ADD(NOW(), INTERVAL 1 HOUR)"; // Default retry
-                 }
-             } else if($actionType == 'dnc'){
-                 $state = 'DNC';
-                 // Update is_dnc?
-             } else if($actionType == 'closed'){
-                 $state = 'CLOSED';
-             }
-        } else {
-             // Fallback logic if disposition not in master
-             $state = 'CLOSED'; 
+        $dispQuery = mysqli_query($this->conn, "SELECT code, action_type FROM dialer_disposition_master WHERE label='$safeDisposition' AND company_id = '" . intval($cnRow['company_id'] ?? 0) . "' LIMIT 1");
+        if ($dispQuery && mysqli_num_rows($dispQuery) > 0) {
+            $dRow = mysqli_fetch_assoc($dispQuery);
+            $actionType = strtolower(trim((string)($dRow['action_type'] ?? '')));
         }
 
-        // Check if new notes are added
-        $notesUpdate = "";
-        if (!empty($notes)) {
-             $userId = $_SESSION['zid']; 
-             $userName = "Unknown";
-             
-             // Get User Name
-             $uQ = mysqli_query($this->conn, "SELECT user_email FROM users WHERE id='$userId'");
-             if($uQ && mysqli_num_rows($uQ) > 0){
-                 $uRow = mysqli_fetch_assoc($uQ);
-                 $userName = $uRow['user_email']; 
-             }
-
-             $timestamp = date('Y-m-d H:i');
-             
-             // Fetch existing notes to append to JSON array
-             $currentNotesJson = "[]";
-             $cnQ = mysqli_query($this->conn, "SELECT notes, company_id, campaignid FROM campaignnumbers WHERE id='$id'");
-             if($cnQ && mysqli_num_rows($cnQ) > 0){
-                 $cnRow = mysqli_fetch_assoc($cnQ);
-                 $rawNotes = $cnRow['notes'];
-                 
-                 // Try decode
-                 $decoded = json_decode($rawNotes, true);
-                 if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
-                     $cNotes = $decoded;
-                 } else {
-                     // Legacy text or empty
-                     $cNotes = [];
-                     if(!empty($rawNotes)) {
-                         // Preserve legacy note as an entry
-                         $cNotes[] = [
-                             'date' => '', 
-                             'user' => 'Legacy', 
-                             'note' => $rawNotes
-                         ];
-                     }
-                 }
-             } else {
-                 $cNotes = [];
-             }
-
-             // Append new note
-             $cNotes[] = [
-                 'date' => $timestamp,
-                 'user' => $userName,
-                 'note' => $notes 
-             ];
-             
-             // Ensure we are saving valid JSON
-             $jsonString = json_encode($cNotes);
-             if($jsonString === false) {
-                 // Fallback if encode fails
-                 $jsonString = "[]";
-             }
-             $jsonNotes = mysqli_real_escape_string($this->conn, $jsonString);
-             $notesUpdate = ", notes = '$jsonNotes'";
+        if ($actionType === 'callback' || $actionType === 'retry') {
+            $state = 'SCHEDULED';
+            $scheduledFor = $this->resolveScheduledDateTime($callbackDate, $callbackTime);
+            $nextCallAt = "'" . mysqli_real_escape_string($this->conn, $scheduledFor) . "'";
+        } else if ($actionType === 'global_dnc' || $actionType === 'dnc') {
+            $state = 'DNC';
+        } else if ($actionType === 'close' || $actionType === 'closed') {
+            $state = 'CLOSED';
         }
 
-        // Update Campaign Numbers
-        $query = "UPDATE campaignnumbers 
-                  SET last_disposition='$disposition', 
-                      state='$state', 
-                      next_call_at=$nextCallAt 
-                      $notesUpdate,
-                      last_call_ended_at=NOW()
-                  WHERE id='$id'";
-        
-        if(mysqli_query($this->conn, $query)){
-            // Insert Log
-             if(!isset($cnRow)) {
-                 $infoQ = mysqli_query($this->conn, "SELECT company_id, campaignid FROM campaignnumbers WHERE id='$id'");
-                 $cnRow = mysqli_fetch_assoc($infoQ);
-             }
-             $compId = $cnRow['company_id'] ?? 0;
-             $campId = $cnRow['campaignid'] ?? 0;
-             
-             // Use proper escaping for log insert as well (though $notes is original arg)
-             $logDisposition = mysqli_real_escape_string($this->conn, $disposition);
-             $logNotes = mysqli_real_escape_string($this->conn, $notes); // Use the NEW note text for log, not the JSON blob
+        $userId = isset($_SESSION['zid']) ? intval($_SESSION['zid']) : 0;
+        $userName = 'Unknown';
+        if ($userId > 0) {
+            $uQ = mysqli_query($this->conn, "SELECT user_email FROM users WHERE id='$userId' LIMIT 1");
+            if ($uQ && mysqli_num_rows($uQ) > 0) {
+                $uRow = mysqli_fetch_assoc($uQ);
+                $userName = $uRow['user_email'] ?? 'Unknown';
+            }
+        }
 
-            $logQ = "INSERT INTO dialer_call_log SET
-                     company_id = '$compId',
-                     campaign_id = '$campId',
-                     campaignnumber_id = '$id',
-                     call_status = 'MANUAL_DISPO',
-                     disposition = '$logDisposition',
-                     notes = '$logNotes',
-                     started_at = NOW()";
-            
-            if(!mysqli_query($this->conn, $logQ)) {
-                // error_log("Dial Log Error: " . mysqli_error($this->conn));
+        $notesUpdate = '';
+        if ($rawNotes !== '') {
+            $timestamp = date('Y-m-d H:i');
+            $existingNotes = [];
+            $decoded = json_decode((string)($cnRow['notes'] ?? ''), true);
+
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                $existingNotes = $decoded;
+            } else if (!empty($cnRow['notes'])) {
+                $existingNotes[] = [
+                    'date' => '',
+                    'user' => 'Legacy',
+                    'note' => $cnRow['notes']
+                ];
             }
 
-            return ['success' => true];
-        } else {
-             return ['success' => false, 'error' => mysqli_error($this->conn)];
+            $existingNotes[] = [
+                'date' => $timestamp,
+                'user' => $userName,
+                'note' => $rawNotes
+            ];
+
+            $jsonString = json_encode($existingNotes);
+            if ($jsonString === false) {
+                $jsonString = '[]';
+            }
+            $jsonNotes = mysqli_real_escape_string($this->conn, $jsonString);
+            $notesUpdate = ", notes = '$jsonNotes'";
+        }
+
+        mysqli_begin_transaction($this->conn);
+
+        try {
+            $updateSql = "UPDATE campaignnumbers 
+                          SET last_disposition='$safeDisposition', 
+                              state='$state', 
+                              next_call_at=$nextCallAt 
+                              $notesUpdate,
+                              last_call_ended_at=NOW()
+                          WHERE id='$id'";
+
+            if (!mysqli_query($this->conn, $updateSql)) {
+                throw new Exception(mysqli_error($this->conn));
+            }
+
+            $companyId = intval($cnRow['company_id'] ?? 0);
+            $campaignId = intval($cnRow['campaignid'] ?? 0);
+            $logNotes = mysqli_real_escape_string($this->conn, $rawNotes);
+
+            $logQ = "INSERT INTO dialer_call_log SET
+                     company_id = '$companyId',
+                     campaign_id = '$campaignId',
+                     campaignnumber_id = '$id',
+                     call_status = 'MANUAL_DISPO',
+                     disposition = '$safeDisposition',
+                     notes = '$logNotes',
+                     started_at = NOW()";
+            if (!mysqli_query($this->conn, $logQ)) {
+                error_log('Dial disposition log insert failed: ' . mysqli_error($this->conn));
+            }
+
+            if (!$this->cancelPendingScheduledCalls($companyId, $id, $userId)) {
+                throw new Exception(mysqli_error($this->conn));
+            }
+
+            if ($actionType === 'callback' || $actionType === 'retry') {
+                $scheduleResult = $this->insertScheduledCall($cnRow, $rawDisposition, $rawNotes, $actionType, $scheduledFor, $userId);
+                if (!$scheduleResult['success']) {
+                    throw new Exception($scheduleResult['error'] ?? 'Unable to create scheduled call');
+                }
+            }
+
+            mysqli_commit($this->conn);
+            return ['success' => true, 'scheduled_for' => $scheduledFor, 'action_type' => strtoupper($actionType)];
+        } catch (Exception $e) {
+            mysqli_rollback($this->conn);
+            return ['success' => false, 'error' => $e->getMessage()];
         }
     }
 
