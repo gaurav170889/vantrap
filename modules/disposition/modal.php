@@ -14,6 +14,18 @@ Class Disposition_modal{
 		$form_data = mysqli_real_escape_string($this->conn, trim(strip_tags($form_data)));
 		return $form_data;
 	}
+
+	public function hasColumn($tblname, $column){
+		$tblname = preg_replace('/[^a-zA-Z0-9_]/', '', $tblname);
+		$column = preg_replace('/[^a-zA-Z0-9_]/', '', $column);
+		$query = "SHOW COLUMNS FROM `$tblname` LIKE '$column'";
+		$result = mysqli_query($this->conn, $query);
+		return ($result && mysqli_num_rows($result) > 0);
+	}
+
+	public function getLastError(){
+		return mysqli_error($this->conn);
+	}
 	
 	public function insert($tblname, $filed_data){
 
@@ -30,6 +42,7 @@ Class Disposition_modal{
 			return $insert_fire;
 		}
 		else{
+			error_log("Disposition insert failed: " . mysqli_error($this->conn) . " | Query: " . $query);
 			return false;
 		}
 
@@ -130,6 +143,7 @@ Class Disposition_modal{
 			return $update_fire;
 		}
 		else{
+			error_log("Disposition update failed: " . mysqli_error($this->conn) . " | Query: " . $update);
 			return false;
 		}
 

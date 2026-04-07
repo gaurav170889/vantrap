@@ -106,11 +106,16 @@ Class Disposition{
 			
 							$condition['id'] = $update_id;
 
+							$field_val = [];
 							$field_val['label'] = $name;
-							$field_val['code'] = $code;
+							if ($this->modal->hasColumn('dialer_disposition_master', 'name')) {
+								$field_val['name'] = $name;
+							}
 							$field_val['code'] = $code;
 							$field_val['action_type'] = $action_type;
-                            $field_val['color_code'] = $color_code;
+                            if ($this->modal->hasColumn('dialer_disposition_master', 'color_code')) {
+                                $field_val['color_code'] = $color_code;
+                            }
 							
 							$update = $this->modal->update("dialer_disposition_master", $field_val, $condition);
 			
@@ -168,12 +173,25 @@ Class Disposition{
 
 				if((!preg_match('/^[ ]*$/', $name)) && (!preg_match('/^[ ]*$/', $code)))
 				{
+					$company_id = isset($_SESSION['company_id']) ? intval($_SESSION['company_id']) : 0;
+					if ($company_id <= 0) {
+						$json['status'] = 104;
+						$json['msg'] = "Company session not found";
+						echo json_encode($json);
+						return;
+					}
+
+					$field_val = [];
 					$field_val['label'] = $name;
-					$field_val['code'] = $code;
+					if ($this->modal->hasColumn('dialer_disposition_master', 'name')) {
+						$field_val['name'] = $name;
+					}
 					$field_val['code'] = $code;
 					$field_val['action_type'] = $action_type;
-                    $field_val['color_code'] = $color_code;
-					$field_val['company_id'] = $_SESSION['company_id']; // From Session
+                    if ($this->modal->hasColumn('dialer_disposition_master', 'color_code')) {
+                        $field_val['color_code'] = $color_code;
+                    }
+					$field_val['company_id'] = $company_id;
 
 					$insert = $this->modal->insert("dialer_disposition_master", $field_val);
 

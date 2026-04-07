@@ -6,12 +6,40 @@ Class Dashboard{
 
 	private function resolvePeriod()
 	{
-		$allowedPeriods = ['today', 'this_week', 'last_week', 'this_month', 'this_year'];
+		$allowedPeriods = ['today', 'this_week', 'last_week', 'this_month', 'last_month', 'this_year'];
 		$period = isset($_GET['period']) ? trim((string)$_GET['period']) : 'today';
 		if (!in_array($period, $allowedPeriods, true)) {
 			$period = 'today';
 		}
 		return $period;
+	}
+
+	private function resolveView()
+	{
+		$allowedViews = ['outbound', 'rating'];
+		$view = isset($_GET['view']) ? trim((string)$_GET['view']) : 'outbound';
+		if (!in_array($view, $allowedViews, true)) {
+			$view = 'outbound';
+		}
+		return $view;
+	}
+
+	private function getViewConfig($view)
+	{
+		$config = [
+			'outbound' => [
+				'navurl' => 'Dashboard',
+				'title' => 'Outbound Call Analytics',
+				'subtitle' => 'Shows only outbound dialer activity, agent performance, and call disposition trends.'
+			],
+			'rating' => [
+				'navurl' => 'RateAnalytics',
+				'title' => 'Rate Analytics',
+				'subtitle' => 'Shows rating coverage, score trends, and agent rating performance for the selected period.'
+			]
+		];
+
+		return isset($config[$view]) ? $config[$view] : $config['outbound'];
 	}
 
 	private function getCompanyId()
@@ -24,16 +52,23 @@ Class Dashboard{
 	}
 
 	public function index(){
-		$_SESSION['navurl'] = 'Dashboard';
+		$period = $this->resolvePeriod();
+		$dashboardView = $this->resolveView();
+		$viewConfig = $this->getViewConfig($dashboardView);
+
+		$_SESSION['navurl'] = $viewConfig['navurl'];
+		$dashboardTitle = $viewConfig['title'];
+		$dashboardSubtitle = $viewConfig['subtitle'];
+
 		include(INCLUDEPATH.'modules/common/header.php');
 		include(INCLUDEPATH.'modules/common/navbar_1.php');
 
-		$period = $this->resolvePeriod();
 		$periodOptions = [
 			'today' => 'Today',
 			'this_week' => 'This Week',
 			'last_week' => 'Last Week',
 			'this_month' => 'This Month',
+			'last_month' => 'Last Month',
 			'this_year' => 'This Year'
 		];
 
@@ -44,6 +79,7 @@ Class Dashboard{
 	{
 		header('Content-Type: application/json');
 		$period = $this->resolvePeriod();
+		$dashboardView = $this->resolveView();
 		$company_id = $this->getCompanyId();
 		$dashboard = $this->name->getDashboardData($company_id, $period);
 		$includeDebug = isset($_GET['debug']) && $_GET['debug'] == '1';
@@ -55,6 +91,7 @@ Class Dashboard{
 		$response = [
 			'status' => 101,
 			'period' => $period,
+			'view' => $dashboardView,
 			'html' => $html
 		];
 

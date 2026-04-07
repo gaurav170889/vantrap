@@ -73,6 +73,11 @@ $(document).ready(function () {
     var contactTable;
     var isSuperAdmin = <?php echo (($_SESSION['erole'] ?? $_SESSION['role'] ?? '') === 'super_admin') ? 'true' : 'false'; ?>;
     var companyStorageKey = 'campcontact_selected_company_<?php echo (int)($_SESSION['zid'] ?? 0); ?>';
+    var urlParams = new URLSearchParams(window.location.search);
+    var requestedCompanyId = urlParams.get('company_id') || '';
+    var requestedCampaignId = urlParams.get('campaign_id') || '';
+    var pendingAutoOpenContactId = urlParams.get('open_dispo_contact') || '';
+    var hasAutoOpenedDisposition = false;
 
     function getCampaignStorageKey() {
         var selectedCompany = isSuperAdmin ? ($('#filterCompany').val() || '0') : '<?php echo (int)($_SESSION['company_id'] ?? 0); ?>';
@@ -157,6 +162,9 @@ $(document).ready(function () {
 
                 $('#filterCompany').html(options);
 
+                if (!currentSelected && requestedCompanyId && $('#filterCompany option[value="' + requestedCompanyId + '"]').length > 0) {
+                    currentSelected = requestedCompanyId;
+                }
                 if (!currentSelected && savedSelected && $('#filterCompany option[value="' + savedSelected + '"]').length > 0) {
                     currentSelected = savedSelected;
                 }
@@ -202,6 +210,9 @@ $(document).ready(function () {
                 });
                 $('#filterCampaign').html(options);
 
+                if (!currentSelected && requestedCampaignId && $('#filterCampaign option[value="' + requestedCampaignId + '"]').length > 0) {
+                    currentSelected = requestedCampaignId;
+                }
                 if (!currentSelected && savedSelected && $('#filterCampaign option[value="' + savedSelected + '"]').length > 0) {
                     currentSelected = savedSelected;
                 }
@@ -271,6 +282,25 @@ $(document).ready(function () {
             }).popover('show');
         }
     });
+
+    function tryAutoOpenDisposition() {
+        if (!pendingAutoOpenContactId || hasAutoOpenedDisposition) {
+            return;
+        }
+
+        var $button = $('#campaignTable').find('.open-dispo[data-id="' + pendingAutoOpenContactId + '"]').first();
+        if ($button.length > 0) {
+            hasAutoOpenedDisposition = true;
+            pendingAutoOpenContactId = '';
+            $button.trigger('click');
+
+            if (window.history && window.history.replaceState) {
+                var cleanUrl = new URL(window.location.href);
+                cleanUrl.searchParams.delete('open_dispo_contact');
+                window.history.replaceState({}, '', cleanUrl.toString());
+            }
+        }
+    }
 
     contactTable = $('#campaignTable').DataTable({
         ajax: {
@@ -371,6 +401,10 @@ $(document).ready(function () {
             emptyTable: "Please select Campaign first to view contacts."
         },
         "order": [[0, "desc"]]
+    });
+
+    $('#campaignTable').on('draw.dt', function () {
+        tryAutoOpenDisposition();
     });
 
     resetTypeAndValue();

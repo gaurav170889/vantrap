@@ -74,10 +74,10 @@ const db = mysql.createPool({
     connectionLimit: 10
 });
 
-// ------------ PBXDETAIL: token cache per company ------------
+// ------------ PBXDETAIL: token cache per company & TIMEZONE CHECK --------
 async function getPbxTokenByCompany(companyId) {
     const [rows] = await db.execute(
-        `SELECT id AS pbx_id, pbxurl, pbxclientid, pbxsecret, auth_token, auth_updated_at
+        `SELECT id AS pbx_id, pbxurl, pbxclientid, pbxsecret, auth_token, auth_updated_at, timezone
          FROM pbxdetail WHERE company_id=? LIMIT 1`,
         [companyId]
     );
@@ -91,7 +91,7 @@ async function getPbxTokenByCompany(companyId) {
 
     if (pbx.auth_token && pbx.auth_updated_at) {
         const ageSec = Math.floor((new Date() - new Date(pbx.auth_updated_at)) / 1000);
-        if (ageSec < TOKEN_REUSE_SEC) return { pbxurl: safeUrl, token: pbx.auth_token };
+        if (ageSec < TOKEN_REUSE_SEC) return { pbxurl: safeUrl, token: pbx.auth_token, timezone: pbx.timezone };
     }
 
     log(`[Company ${companyId}] Refreshing 3CX Token...`);
@@ -115,7 +115,62 @@ async function getPbxTokenByCompany(companyId) {
         [token, pbx.pbx_id, companyId]
     );
 
-    return { pbxurl: safeUrl, token };
+    return { pbxurl: safeUrl, token, timezone: pbx.timezone };
+}
+
+// ------------ TIMEZONE HELPER: Get PBX timezone by company --------
+async function getPbxTimezone(companyId) {
+    try {
+        const [rows] = await db.execute(
+            `SELECT timezone FROM pbxdetail WHERE company_id=? LIMIT 1`,
+            [companyId]
+        );
+        if (!rows.length) {
+            log(`[Company ${companyId}] No pbxdetail record found for timezone check.`, { companyId });
+            return null;
+        }
+        const tz = rows[0].timezone;
+        if (!tz || !isPbxTimezoneValid(tz)) {
+            log(`[Company ${companyId}] PBX timezone is not set or invalid: ${tz}`, { companyId, timezone: tz });
+            return null;
+        }
+        return tz;
+    } catch (e) {
+        log(`[Company ${companyId}] Error fetching PBX timezone: ${e.message}`, { companyId, error: e.message });
+        return null;
+    }
+}
+
+// ------------ TIMEFRAME CHECK WITH TIMEZONE --------
+// If timezone is set, verify that NOW() (in PBX TZ) >= next_call_at (UTC)
+// If no timezone, fallback to direct MySQL NOW() comparison
+function buildTimeframeFilter(timezone) {
+    if (!timezone || !isPbxTimezoneValid(timezone)) {
+        // No valid timezone: use direct UTC comparison
+        return `next_call_at IS NULL OR next_call_at <= NOW()`;
+    }
+    // With timezone: Convert NOW() to PBX TZ then compare
+    // CONVERT_TZ(NOW(), '+00:00', 'PBX_OFFSET') or use CAST(CONVERT_TZ(...) as DATETIME)
+    return `next_call_at IS NULL OR CONVERT_TZ(NOW(), '+00:00', '${timezone}') >= next_call_at`;
+}
+
+// ------------ TIMEZONE HELPER: Check if PBX timezone is valid --------
+function isPbxTimezoneValid(timezone) {
+    if (!timezone || typeof timezone !== 'string') return false;
+    try {
+        Intl.DateTimeFormat(undefined, { timeZone: timezone });
+        return true;
+    } catch (err) {
+        return false;
+    }
+}
+
+// ------------ TIMEZONE HELPER: Get current time in PBX timezone (ISO string in that TZ) --------
+function getCurrentTimeInTimezone(timezone) {
+    if (!isPbxTimezoneValid(timezone)) {
+        return new Date(); // Fall back to local/UTC
+    }
+    return new Date();
 }
 
 // ------------ DID Rotation ------------
@@ -365,9 +420,19 @@ async function getAgentExtensionById(companyId, agentId) {
     };
 }
 
-// ------------ Queue Logic: Pick & Lock ------------
-async function pickLead(companyId, campaignId) {
+// ------------ Queue Logic: Pick & Lock (WITH TIMEZONE AWARENESS) --------
+async function pickLead(companyId, campaignId, pbxTimezone) {
     const lockToken = uuidv4();
+
+    // Determine time comparison clause based on timezone
+    let timeframeSql = `(next_call_at IS NULL OR next_call_at <= NOW())`;
+    if (pbxTimezone && isPbxTimezoneValid(pbxTimezone)) {
+        // With timezone: Compare NOW() in PBX TZ >= next_call_at (UTC)
+        timeframeSql = `(next_call_at IS NULL OR CONVERT_TZ(NOW(), '+00:00', '${pbxTimezone}') >= next_call_at)`;
+        log(`[Camp ${campaignId}] Using timezone-aware time check (TZ=${pbxTimezone})`, { companyId, campaignId, timezone: pbxTimezone });
+    } else if (pbxTimezone) {
+        log(`[Camp ${campaignId}] PBX timezone invalid or not set, using UTC fallback: ${pbxTimezone}`, { companyId, campaignId, timezone: pbxTimezone });
+    }
 
     // 1. Find candidate
     // Rules: READY/SCHEDULED, Time reached, Attempts left, Not DNC, Not Locked (or stale lock)
@@ -378,7 +443,7 @@ async function pickLead(companyId, campaignId) {
            AND state IN ('READY','SCHEDULED')
            AND is_dnc=0
            AND attempts_used < max_attempts
-           AND (next_call_at IS NULL OR next_call_at <= NOW())
+           AND ${timeframeSql}
            AND (locked_at IS NULL OR locked_at < DATE_SUB(NOW(), INTERVAL 2 MINUTE))
          ORDER BY priority ASC, next_call_at ASC
          LIMIT 1`,
@@ -440,8 +505,18 @@ async function pickLead(companyId, campaignId) {
     return { ...lead, lockToken };
 }
 
-async function pickScheduledLead(companyId, campaignId) {
+async function pickScheduledLead(companyId, campaignId, pbxTimezone) {
     const lockToken = uuidv4();
+
+    // Determine time comparison clause based on timezone
+    let timeframeSql = `(next_call_at IS NOT NULL AND next_call_at <= NOW())`;
+    if (pbxTimezone && isPbxTimezoneValid(pbxTimezone)) {
+        // With timezone: Compare NOW() in PBX TZ >= next_call_at (UTC)
+        timeframeSql = `(next_call_at IS NOT NULL AND CONVERT_TZ(NOW(), '+00:00', '${pbxTimezone}') >= next_call_at)`;
+        log(`[Camp ${campaignId}] Scheduled lead check with timezone (TZ=${pbxTimezone})`, { companyId, campaignId, timezone: pbxTimezone });
+    } else if (pbxTimezone) {
+        log(`[Camp ${campaignId}] Scheduled lead: PBX timezone invalid, using UTC fallback: ${pbxTimezone}`, { companyId, campaignId, timezone: pbxTimezone });
+    }
 
     const [rows] = await db.execute(
         `SELECT id, phone_e164, phone_raw, attempts_used, max_attempts, agent_connected, next_call_at
@@ -450,8 +525,7 @@ async function pickScheduledLead(companyId, campaignId) {
            AND state='SCHEDULED'
            AND is_dnc=0
            AND attempts_used < max_attempts
-           AND next_call_at IS NOT NULL
-           AND next_call_at <= NOW()
+           AND ${timeframeSql}
            AND (locked_at IS NULL OR locked_at < DATE_SUB(NOW(), INTERVAL 2 MINUTE))
          ORDER BY next_call_at ASC, priority ASC, id ASC
          LIMIT 1`,
@@ -931,6 +1005,9 @@ async function tick() {
             const dialerDn = String(c.dn_number || DIALER_DN).trim(); // Use campaign DN or default
             const dialerMode = String(c.dialer_mode || "").trim();
 
+            // Fetch PBX timezone for this company
+            const pbxTimezone = await getPbxTimezone(c.company_id);
+
             if (dialerMode !== 'Scheduled Dialer' && !queueDn) continue;
 
             if (dialerMode === 'Predictive Dialer') {
@@ -973,7 +1050,7 @@ async function tick() {
                     continue;
                 }
             } else if (dialerMode === 'Scheduled Dialer') {
-                const lead = await pickScheduledLead(c.company_id, c.id);
+                const lead = await pickScheduledLead(c.company_id, c.id, pbxTimezone);
                 if (!lead) continue;
 
                 spawnScheduledCallFlow(c, lead, queueDn, dialerDn).catch(e => {
@@ -982,7 +1059,7 @@ async function tick() {
                 continue;
             }
 
-            const lead = await pickLead(c.company_id, c.id);
+            const lead = await pickLead(c.company_id, c.id, pbxTimezone);
             if (!lead) continue;
 
             spawnCallFlow(c, lead, queueDn, dialerDn).catch(e => {

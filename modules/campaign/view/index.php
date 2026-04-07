@@ -192,10 +192,19 @@
         <div class="form-group">
           <label for="csvFile">Upload CSV File</label>
           <input type="file" class="form-control-file" id="csvFile" name="csvFile" accept=".csv" required>
-          <small class="form-text text-muted">
+          <small class="form-text text-muted d-block mb-1">
               Supported columns: <b>number, fname, lname, type, feedback</b>. Any other columns will be saved as extra data.
               <a href="campaign/download_sample" target="_blank" class="ml-2"><i class="fas fa-file-csv"></i> Download Sample CSV</a>
           </small>
+          <div class="alert alert-info mt-2 mb-0" style="font-size: 13px;">
+              <strong>Import rules:</strong>
+              <ul class="mb-0 pl-3">
+                  <li><b>Number</b> should contain digits only. A leading <b>+</b> is allowed.</li>
+                  <li>Characters like <code>()-</code>, spaces, and other special symbols are removed automatically.</li>
+                  <li>If <b>scheduled_date</b> and <b>scheduled_time</b> are older than the current time, the row is still imported but as a <b>ready contact</b>, not a scheduled call.</li>
+                  <li>Imported rows are added to the <b>Contacts</b> list for the selected campaign.</li>
+              </ul>
+          </div>
         </div>
       </div>
       <div class="modal-footer">
@@ -606,6 +615,12 @@ $(document).ready(function() {
         }
 
         const formData = new FormData(this);
+        const selectedCampaignId = $('#campaignSelect').val();
+        const selectedCompanyId = $('#importCompanySelect').length > 0
+            ? ($('#importCompanySelect').val() || '')
+            : '<?php echo (int)($_SESSION['company_id'] ?? 0); ?>';
+        const sessionUserId = '<?php echo (int)($_SESSION['zid'] ?? 0); ?>';
+
         $.ajax({
           url: 'campaign/import_numbers',
           type: 'POST',
@@ -615,11 +630,16 @@ $(document).ready(function() {
           dataType: 'json',
           success: function (response) {
             if(response.success){
-                 alert(response.message || 'Import complete!');
-                 $('#importNumbersModal').modal('hide');
-                 $('#importNumbersForm')[0].reset();
-                 $('#campaignSelect').val(null).trigger('change');
-                 if(isSuperAdmin) $('#importCompanySelect').val(null).trigger('change');
+                 if (selectedCompanyId) {
+                     localStorage.setItem('campcontact_selected_company_' + sessionUserId, String(selectedCompanyId));
+                 }
+                 if (selectedCampaignId) {
+                     localStorage.setItem('campcontact_selected_campaign_' + sessionUserId + '_' + String(selectedCompanyId || '0'), String(selectedCampaignId));
+                 }
+
+                 alert((response.message || 'Import complete!') + '\n\nOpening Contacts for the imported campaign now.');
+                 const targetUrl = '<?php echo NAVURL; ?>campcontact/?company_id=' + encodeURIComponent(selectedCompanyId || '') + '&campaign_id=' + encodeURIComponent(selectedCampaignId || '');
+                 window.location.href = targetUrl;
             } else {
                  alert('Import failed: ' + response.message);
             }

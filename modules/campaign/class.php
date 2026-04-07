@@ -342,10 +342,13 @@ Class Campaign{
         $output = fopen('php://output', 'w');
         // Fixed headers + example extra headers
         fputcsv($output, ['number', 'fname', 'lname', 'type', 'feedback', 'scheduled_date', 'scheduled_time', 'custom_field_1']);
+
+        $sampleDate1 = date('Y-m-d', strtotime('+1 day'));
+        $sampleDate2 = date('Y-m-d', strtotime('+2 days'));
         
-        // Sample data
-        fputcsv($output, ['1234567890', 'John', 'Doe', 'Lead', 'Interested', '2025-12-31', '14:30', 'Value1']);
-        fputcsv($output, ['9876543210', 'Jane', 'Smith', 'Customer', 'CallBack', '', '', 'DataA']);
+        // Sample data (number supports digits only, or leading + followed by digits)
+        fputcsv($output, ['+1234567890', 'John', 'Doe', 'Lead', 'Interested', $sampleDate1, '14:30', 'Value1']);
+        fputcsv($output, ['9876543210', 'Jane', 'Smith', 'Customer', 'CallBack', $sampleDate2, '10:00', 'DataA']);
         
         fclose($output);
         exit;
@@ -417,6 +420,107 @@ Class Campaign{
     public function download_import_file()
     {
         // ... Logic to download preserved file
+    }
+
+    // --- NOT DIALED NUMBERS ---
+    public function notdialed()
+    {
+        $_SESSION['navurl'] = 'NotDialed';
+
+        include(INCLUDEPATH.'modules/common/campaignheader.php');
+        include(INCLUDEPATH.'modules/common/navbar_1.php');
+
+        $companies = [];
+        if (isset($_SESSION['erole']) && $_SESSION['erole'] == 'super_admin') {
+            $companies = $this->modal->getCompanies();
+        }
+
+        include("view/notdialed.php");
+        include('modules/common/campaignfooter.php');
+    }
+
+    public function get_not_dialed_list()
+    {
+        $role = $_SESSION['erole'] ?? $_SESSION['role'] ?? '';
+        $company_id = null;
+
+        if ($role === 'super_admin') {
+            $company_id = isset($_GET['company_id']) && $_GET['company_id'] !== '' ? intval($_GET['company_id']) : null;
+        } elseif (isset($_SESSION['company_id'])) {
+            $company_id = intval($_SESSION['company_id']);
+        }
+
+        $data = $this->modal->getNotDialedNumbers($company_id);
+        echo json_encode($data);
+    }
+
+    // --- DIALED ANSWERED NUMBERS ---
+    public function dialednumbers()
+    {
+        $_SESSION['navurl'] = 'DialedNumber';
+
+        include(INCLUDEPATH.'modules/common/campaignheader.php');
+        include(INCLUDEPATH.'modules/common/navbar_1.php');
+
+        $companies = [];
+        if (isset($_SESSION['erole']) && $_SESSION['erole'] == 'super_admin') {
+            $companies = $this->modal->getCompanies();
+        }
+
+        include("view/dialednumbers.php");
+        include('modules/common/campaignfooter.php');
+    }
+
+    public function get_dialed_numbers_list()
+    {
+        $role = $_SESSION['erole'] ?? $_SESSION['role'] ?? '';
+        $company_id = null;
+
+        if ($role === 'super_admin') {
+            $company_id = isset($_GET['company_id']) && $_GET['company_id'] !== '' ? intval($_GET['company_id']) : null;
+        } elseif (isset($_SESSION['company_id'])) {
+            $company_id = intval($_SESSION['company_id']);
+        }
+
+        $data = $this->modal->getDialedAnsweredNumbers($company_id);
+        echo json_encode($data);
+    }
+
+    // --- SCHEDULE CALL LIST ---
+    public function schedulecalls()
+    {
+        $_SESSION['navurl'] = 'ScheduleCall';
+
+        include(INCLUDEPATH.'modules/common/campaignheader.php');
+        include(INCLUDEPATH.'modules/common/navbar_1.php');
+
+        $companies = [];
+        if (isset($_SESSION['erole']) && $_SESSION['erole'] == 'super_admin') {
+            $companies = $this->modal->getCompanies();
+        }
+
+        include("view/schedulecalls.php");
+        include('modules/common/campaignfooter.php');
+    }
+
+    public function get_schedule_calls_list()
+    {
+        $role = $_SESSION['erole'] ?? $_SESSION['role'] ?? '';
+        $company_id = null;
+
+        if ($role === 'super_admin') {
+            $company_id = isset($_GET['company_id']) && $_GET['company_id'] !== '' ? intval($_GET['company_id']) : null;
+        } elseif (isset($_SESSION['company_id'])) {
+            $company_id = intval($_SESSION['company_id']);
+        }
+
+        $agentId = 0;
+        if ($role === 'uagent') {
+            $agentId = $this->modal->getSessionAgentId();
+        }
+
+        $data = $this->modal->getScheduledCalls($company_id, $role, $agentId);
+        echo json_encode($data);
     }
 
 }
