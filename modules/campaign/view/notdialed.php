@@ -34,6 +34,8 @@
                                 <th>Phone</th>
                                 <th>Name</th>
                                 <th>State</th>
+                                <th>Last Outcome</th>
+                                <th>Attempts</th>
                                 <th>Created At</th>
                                 <th>Next Call At</th>
                             </tr>
@@ -60,6 +62,15 @@ $(document).ready(function() {
             }
         },
         { data: 'state', defaultContent: '-' },
+        { data: 'last_call_status', defaultContent: '-' },
+        {
+            data: null,
+            render: function(data, type, row) {
+                var used = row.attempts_used || 0;
+                var max = row.max_attempts || 0;
+                return used + '/' + max;
+            }
+        },
         { data: 'created_at', defaultContent: '-' },
         { data: 'next_call_at', defaultContent: '-' }
     ];
@@ -79,7 +90,7 @@ $(document).ready(function() {
             dataSrc: ''
         },
         columns: columns,
-        order: [[isSuperAdmin ? 6 : 5, 'asc']]
+        order: [[isSuperAdmin ? 7 : 6, 'asc']]
     });
 
     $('#companyFilter').on('change', function() {

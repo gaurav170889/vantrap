@@ -23,11 +23,33 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const LOG_FILE = path.join(__dirname, "dialer.log");
 const WORKER_ID = `worker-${process.pid}`;
+const LOG_KEEP_LINES = 2000;
+const LOG_TRIM_CHECK_EVERY = 25;
 
 // ------------ Helpers ------------
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const normalizeNum = (s) => String(s || "").replace(/[^\d+]/g, "");
 const normalizePhoneKey = (s) => String(s || "").replace(/\D/g, "");
+let logWriteCount = 0;
+let lastCampaignScanMessage = "";
+
+function trimLogFileIfNeeded() {
+    try {
+        if (!fs.existsSync(LOG_FILE)) return;
+
+        const content = fs.readFileSync(LOG_FILE, "utf8");
+        const lines = content.split(/\r?\n/);
+        const nonEmptyLineCount = lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
+
+        if (nonEmptyLineCount <= LOG_KEEP_LINES) return;
+
+        const trimmed = lines.slice(Math.max(0, nonEmptyLineCount - LOG_KEEP_LINES));
+        const finalContent = trimmed.join("\n").replace(/\n+$/, "") + "\n";
+        fs.writeFileSync(LOG_FILE, finalContent, "utf8");
+    } catch (e) {
+        console.error("Failed to trim dialer log:", e.message);
+    }
+}
 
 function log(msg, data = null) {
     const ts = new Date().toLocaleString();
@@ -41,6 +63,10 @@ function log(msg, data = null) {
     }
     console.log(`[${ts}] ${msg}`, data ? data : "");
     fs.appendFileSync(LOG_FILE, entry + "\n");
+    logWriteCount += 1;
+    if (logWriteCount % LOG_TRIM_CHECK_EVERY === 0) {
+        trimLogFileIfNeeded();
+    }
 }
 
 const logCallAttemptV2 = async (companyId, campaignId, leadId, callId, status, disposition, agentId, attemptNo) => {
@@ -165,12 +191,38 @@ function isPbxTimezoneValid(timezone) {
     }
 }
 
-// ------------ TIMEZONE HELPER: Get current time in PBX timezone (ISO string in that TZ) --------
+// ------------ TIMEZONE HELPER: Get current time in PBX timezone (MySQL DATETIME string) --------
 function getCurrentTimeInTimezone(timezone) {
+    const now = new Date();
     if (!isPbxTimezoneValid(timezone)) {
-        return new Date(); // Fall back to local/UTC
+        const pad = (value) => String(value).padStart(2, "0");
+        return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
     }
-    return new Date();
+
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+        timeZone: timezone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hourCycle: "h23"
+    });
+
+    const parts = formatter.formatToParts(now);
+    const values = {};
+    for (const part of parts) {
+        if (part.type !== "literal") {
+            values[part.type] = part.value;
+        }
+    }
+
+    return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second}`;
+}
+
+function getCurrentDateInTimezone(timezone) {
+    return getCurrentTimeInTimezone(timezone).slice(0, 10);
 }
 
 // ------------ DID Rotation ------------
@@ -335,6 +387,45 @@ async function getSystemStatusByCompany(companyId) {
     return status;
 }
 
+async function getConfiguredSimultaneousCallsByCompany(companyId) {
+    const [rows] = await db.execute(
+        `SELECT simultaneous_calls
+         FROM pbxdetail
+         WHERE company_id=? LIMIT 1`,
+        [companyId]
+    );
+
+    if (!rows.length) return 0;
+    return Math.max(0, toSafeInt(rows[0].simultaneous_calls, 0));
+}
+
+async function companyWideCapacityAllowsDialing(companyId) {
+    try {
+        const status = await getSystemStatusByCompany(companyId);
+        const configuredLimit = await getConfiguredSimultaneousCallsByCompany(companyId);
+        const effectiveLimit = configuredLimit > 0 ? configuredLimit : status.maxSimCalls;
+        const reserveChannels = 2;
+        const threshold = Math.max(0, effectiveLimit - reserveChannels);
+        const ok = status.callsActive < threshold;
+
+        return {
+            ok,
+            callsActive: status.callsActive,
+            maxSimCalls: status.maxSimCalls,
+            configuredLimit,
+            effectiveLimit,
+            reserveChannels,
+            threshold
+        };
+    } catch (e) {
+        return {
+            ok: false,
+            reason: "company_capacity_error",
+            error: e.message
+        };
+    }
+}
+
 async function powerDialerAllowsDialing(companyId, campaign, dialerDn) {
     try {
         const status = await getSystemStatusByCompany(companyId);
@@ -424,12 +515,20 @@ async function getAgentExtensionById(companyId, agentId) {
 async function pickLead(companyId, campaignId, pbxTimezone) {
     const lockToken = uuidv4();
 
-    // Determine time comparison clause based on timezone
-    let timeframeSql = `(next_call_at IS NULL OR next_call_at <= NOW())`;
+    // READY leads use PBX-local date only; time of day is ignored.
+    let timeframeSql = `(next_call_at IS NULL OR DATE(next_call_at) = CURDATE())`;
+    const queryParams = [companyId, campaignId];
     if (pbxTimezone && isPbxTimezoneValid(pbxTimezone)) {
-        // With timezone: Compare NOW() in PBX TZ >= next_call_at (UTC)
-        timeframeSql = `(next_call_at IS NULL OR CONVERT_TZ(NOW(), '+00:00', '${pbxTimezone}') >= next_call_at)`;
-        log(`[Camp ${campaignId}] Using timezone-aware time check (TZ=${pbxTimezone})`, { companyId, campaignId, timezone: pbxTimezone });
+        const pbxCurrentDate = getCurrentDateInTimezone(pbxTimezone);
+        timeframeSql = `(next_call_at IS NULL OR DATE(next_call_at) = ?)`;
+        queryParams.push(pbxCurrentDate);
+        log(`[Camp ${campaignId}] Using timezone-aware time check (TZ=${pbxTimezone})`, {
+            companyId,
+            campaignId,
+            timezone: pbxTimezone,
+            currentDate: pbxCurrentDate,
+            mode: "READY_DATE_ONLY"
+        });
     } else if (pbxTimezone) {
         log(`[Camp ${campaignId}] PBX timezone invalid or not set, using UTC fallback: ${pbxTimezone}`, { companyId, campaignId, timezone: pbxTimezone });
     }
@@ -447,7 +546,7 @@ async function pickLead(companyId, campaignId, pbxTimezone) {
            AND (locked_at IS NULL OR locked_at < DATE_SUB(NOW(), INTERVAL 2 MINUTE))
          ORDER BY priority ASC, next_call_at ASC
          LIMIT 1`,
-        [companyId, campaignId]
+        queryParams
     );
 
     if (!rows.length) return null;
@@ -508,12 +607,20 @@ async function pickLead(companyId, campaignId, pbxTimezone) {
 async function pickScheduledLead(companyId, campaignId, pbxTimezone) {
     const lockToken = uuidv4();
 
-    // Determine time comparison clause based on timezone
+    // SCHEDULED leads use full PBX-local date and time.
     let timeframeSql = `(next_call_at IS NOT NULL AND next_call_at <= NOW())`;
+    const queryParams = [companyId, campaignId];
     if (pbxTimezone && isPbxTimezoneValid(pbxTimezone)) {
-        // With timezone: Compare NOW() in PBX TZ >= next_call_at (UTC)
-        timeframeSql = `(next_call_at IS NOT NULL AND CONVERT_TZ(NOW(), '+00:00', '${pbxTimezone}') >= next_call_at)`;
-        log(`[Camp ${campaignId}] Scheduled lead check with timezone (TZ=${pbxTimezone})`, { companyId, campaignId, timezone: pbxTimezone });
+        const pbxCurrentTime = getCurrentTimeInTimezone(pbxTimezone);
+        timeframeSql = `(next_call_at IS NOT NULL AND next_call_at <= ?)`;
+        queryParams.push(pbxCurrentTime);
+        log(`[Camp ${campaignId}] Scheduled lead check with timezone (TZ=${pbxTimezone})`, {
+            companyId,
+            campaignId,
+            timezone: pbxTimezone,
+            currentTime: pbxCurrentTime,
+            mode: "SCHEDULED_DATE_TIME"
+        });
     } else if (pbxTimezone) {
         log(`[Camp ${campaignId}] Scheduled lead: PBX timezone invalid, using UTC fallback: ${pbxTimezone}`, { companyId, campaignId, timezone: pbxTimezone });
     }
@@ -529,7 +636,7 @@ async function pickScheduledLead(companyId, campaignId, pbxTimezone) {
            AND (locked_at IS NULL OR locked_at < DATE_SUB(NOW(), INTERVAL 2 MINUTE))
          ORDER BY next_call_at ASC, priority ASC, id ASC
          LIMIT 1`,
-        [companyId, campaignId]
+        queryParams
     );
 
     if (!rows.length) return null;
@@ -1000,6 +1107,35 @@ async function tick() {
                WHERE c.status='Running' AND c.is_deleted=0 AND c.dialer_mode IN ('Predictive Dialer','Power Dialer','Scheduled Dialer')`
         );
 
+        const campaignSummary = JSON.stringify(
+            (campaigns || []).map(c => ({
+                id: c.id,
+                company_id: c.company_id,
+                dialer_mode: c.dialer_mode,
+                routeto: c.routeto,
+                dn_number: c.dn_number
+            }))
+        );
+
+        if (!campaigns.length) {
+            if (lastCampaignScanMessage !== "none") {
+                log("No running campaigns found. Dialer is idle.");
+                lastCampaignScanMessage = "none";
+            }
+            return;
+        }
+
+        if (lastCampaignScanMessage !== campaignSummary) {
+            log(`Loaded ${campaigns.length} running campaign(s).`, campaigns.map(c => ({
+                id: c.id,
+                company_id: c.company_id,
+                dialer_mode: c.dialer_mode,
+                routeto: c.routeto,
+                dn_number: c.dn_number
+            })));
+            lastCampaignScanMessage = campaignSummary;
+        }
+
         for (const c of campaigns) {
             const queueDn = String(c.routeto || "").trim();
             const dialerDn = String(c.dn_number || DIALER_DN).trim(); // Use campaign DN or default
@@ -1007,6 +1143,18 @@ async function tick() {
 
             // Fetch PBX timezone for this company
             const pbxTimezone = await getPbxTimezone(c.company_id);
+
+            const capacityGate = await companyWideCapacityAllowsDialing(c.company_id);
+            if (!capacityGate.ok) {
+                if (capacityGate.reason === 'company_capacity_error') {
+                    log(`[Camp ${c.id}] PBX capacity gate error: ${capacityGate.error}`);
+                } else {
+                    log(
+                        `[Camp ${c.id}] PBX capacity blocked - CallsActive: ${capacityGate.callsActive}, Configured Limit: ${capacityGate.configuredLimit || capacityGate.effectiveLimit}, Reserve: ${capacityGate.reserveChannels}, Threshold: ${capacityGate.threshold}`
+                    );
+                }
+                continue;
+            }
 
             if (dialerMode !== 'Scheduled Dialer' && !queueDn) continue;
 
