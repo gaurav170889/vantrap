@@ -370,7 +370,7 @@ Class Campcontact_modal{
         return $values;
     }
 	
-    public function getallcontact($company_id = null, $campaign_id = 0, $filter_type = '', $filter_value = '') {
+    public function getallcontact($company_id = null, $campaign_id = 0, $filter_type = '', $filter_value = '', $open_contact_id = 0) {
          $where = "WHERE 1=1";
          if($company_id !== null) {
              $where .= " AND c.company_id = $company_id";
@@ -402,6 +402,26 @@ Class Campcontact_modal{
              }
          }
 
+         $open_contact_id = intval($open_contact_id);
+         if ($open_contact_id > 0) {
+             $where .= " AND (
+                            c.id = $open_contact_id
+                            OR DATE(c.created_at) = CURDATE()
+                            OR (
+                                c.next_call_at IS NOT NULL
+                                AND DATE(c.next_call_at) = CURDATE()
+                            )
+                          )";
+         } else {
+             $where .= " AND (
+                            DATE(c.created_at) = CURDATE()
+                            OR (
+                                c.next_call_at IS NOT NULL
+                                AND DATE(c.next_call_at) = CURDATE()
+                            )
+                          )";
+         }
+
          // New Schema Query
          $query = "SELECT c.id, c.phone_e164, c.first_name, c.last_name, 
                      c.state, c.attempts_used, c.max_attempts,
@@ -409,11 +429,20 @@ Class Campcontact_modal{
                      c.agent_connected, c.notes, c.last_disposition,
                      c.next_call_at,
 					 a.agent_name, d.color_code
-			  FROM campaignnumbers c
-			  LEFT JOIN agent a ON c.agent_connected = a.agent_id
+              FROM campaignnumbers c
+              LEFT JOIN agent a ON c.agent_connected = a.agent_id
               LEFT JOIN dialer_disposition_master d ON c.last_disposition = d.label AND c.company_id = d.company_id
 			  $where
-              ORDER BY c.id DESC LIMIT 2000";
+              ORDER BY 
+                  CASE 
+                      WHEN c.id = $open_contact_id AND $open_contact_id > 0 THEN 0
+                      WHEN c.next_call_at IS NOT NULL AND DATE(c.next_call_at) = CURDATE() THEN 1
+                      WHEN DATE(c.created_at) = CURDATE() THEN 2
+                      ELSE 3
+                  END,
+                  COALESCE(c.next_call_at, c.created_at) ASC,
+                  c.id DESC
+              LIMIT 2000";
 
         $result = mysqli_query($this->conn, $query);
 

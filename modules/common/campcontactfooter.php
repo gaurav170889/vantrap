@@ -311,6 +311,7 @@ $(document).ready(function () {
                 d.campaign_id = $('#filterCampaign').val();
                 d.filter_type = $('#filterType').val();
                 d.filter_value = $('#filterValue').val();
+                d.open_contact_id = pendingAutoOpenContactId || '';
             },
             dataSrc: ''
         },
@@ -591,7 +592,7 @@ function submitDisposition() {
         success: function(response) {
             if (response.success) {
                 $('#dispositionModal').modal('hide');
-                contactTable.ajax.reload();
+                $('#campaignTable').DataTable().ajax.reload(null, false);
                 alert("Disposition Updated!");
             } else {
                 alert("Error: " + (response.error || "Unknown error"));
@@ -631,4 +632,3 @@ function deleteAllContacts() {
     });
 }
 </script>
-

@@ -569,18 +569,21 @@ public function getNotDialedNumbers($company_id = null)
               AND COALESCE(cn.state, '') NOT IN ('DNC', 'CLOSED', 'DISPO_SUBMITTED')
               AND (
                     (
-                        cn.attempts_used = 0
-                        AND DATE(cn.created_at) < CURDATE()
-                    )
-                    OR
-                    (
                         cn.attempts_used > 0
                         AND (
-                            COALESCE(cn.last_call_status, '') IN ('NO_ANSWER', 'FAILED', 'BUSY', 'CANCELLED', 'UNREACHABLE', 'VOICEMAIL')
+                            COALESCE(cn.last_call_status, '') IN ('NO_ANSWER', 'FAILED', 'BUSY', 'CANCELLED', 'UNREACHABLE', 'VOICEMAIL', 'TRANSFERRED')
                             OR cn.agent_connected IS NULL
                             OR TRIM(COALESCE(cn.agent_connected, '')) = ''
                             OR cn.agent_connected = '0'
                             OR COALESCE(cn.state, '') IN ('READY', 'NOT_DIALED', 'RETRY', 'DIAL_FAILED')
+                        )
+                    )
+                    OR
+                    (
+                        cn.attempts_used = 0
+                        AND (
+                            cn.next_call_at IS NULL
+                            OR cn.next_call_at <= NOW()
                         )
                     )
               )";
@@ -593,14 +596,25 @@ public function getNotDialedNumbers($company_id = null)
     }
 
     $sql = "SELECT cn.id, cn.company_id, cn.campaignid, cn.phone_e164, cn.first_name, cn.last_name,
-                   cn.state, cn.created_at, cn.next_call_at,
+                   cn.state, cn.created_at, cn.next_call_at, cn.last_call_status, cn.attempts_used, cn.max_attempts,
                    c.name AS campaign_name,
                    co.name AS company_name
             FROM campaignnumbers cn
             LEFT JOIN campaign c ON c.id = cn.campaignid
             LEFT JOIN companies co ON co.id = cn.company_id
             $where
-            ORDER BY COALESCE(cn.next_call_at, cn.created_at) ASC, cn.id DESC";
+            ORDER BY 
+                CASE 
+                    WHEN cn.attempts_used > 0 THEN 0
+                    ELSE 1
+                END ASC,
+                CASE 
+                    WHEN COALESCE(cn.last_call_status, '') IN ('FAILED', 'CANCELLED', 'UNREACHABLE', 'DIAL_FAILED') THEN 0
+                    WHEN COALESCE(cn.last_call_status, '') IN ('NO_ANSWER', 'BUSY', 'VOICEMAIL', 'TRANSFERRED') THEN 1
+                    ELSE 2
+                END ASC,
+                COALESCE(cn.next_call_at, cn.created_at) ASC,
+                cn.id DESC";
 
     $result = mysqli_query($this->conn, $sql);
     $data = [];
@@ -680,7 +694,8 @@ public function getScheduledCalls($company_id = null, $role = '', $sessionAgentI
 
     $this->syncCompletedScheduledCalls($company_id);
 
-    $where = "WHERE sc.status IN ('pending_agent', 'pending', 'queued', 'scheduled')";
+    $where = "WHERE sc.status IN ('pending_agent', 'pending', 'queued', 'scheduled')
+              AND LOWER(COALESCE(dm.action_type, '')) IN ('callback', 'retry')";
 
     if ($company_id !== null) {
         $company_id = intval($company_id);
@@ -714,6 +729,7 @@ public function getScheduledCalls($company_id = null, $role = '', $sessionAgentI
             LEFT JOIN campaign c ON c.id = sc.campaign_id
             LEFT JOIN companies co ON co.id = sc.company_id
             LEFT JOIN agent a ON a.agent_id = sc.agent_id
+            LEFT JOIN dialer_disposition_master dm ON dm.company_id = sc.company_id AND dm.label = sc.disposition_label
             $where
             ORDER BY sc.scheduled_for ASC, sc.id DESC";
 

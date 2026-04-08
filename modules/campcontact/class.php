@@ -53,8 +53,9 @@ Class Campcontact{
         $campaign_id = isset($_POST['campaign_id']) ? intval($_POST['campaign_id']) : 0;
         $filter_type = isset($_POST['filter_type']) ? trim($_POST['filter_type']) : '';
         $filter_value = isset($_POST['filter_value']) ? trim($_POST['filter_value']) : '';
+        $open_contact_id = isset($_POST['open_contact_id']) ? intval($_POST['open_contact_id']) : 0;
 
-        $data = $this->modal->getallcontact($company_id, $campaign_id, $filter_type, $filter_value);
+        $data = $this->modal->getallcontact($company_id, $campaign_id, $filter_type, $filter_value, $open_contact_id);
         header('Content-Type: application/json');
         echo $data ;
         
