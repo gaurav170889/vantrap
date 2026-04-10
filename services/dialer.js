@@ -1,16 +1,27 @@
-import 'dotenv/config';
-console.log("DIALER V3 STARTING - DEBUG MODE");
 import mysql from "mysql2/promise";
 import axios from "axios";
 import qs from "qs";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import dotenv from "dotenv";
 import { v4 as uuidv4 } from 'uuid';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.join(__dirname, ".env") });
+
+console.log("DIALER V3 STARTING - DEBUG MODE");
+
 const LOOP_MS = 1000;
-const QUEUE_FRESH_SEC = 10;
-const TOKEN_REUSE_SEC = 45;
+const QUEUE_FRESH_SEC = (() => {
+    const configured = Number.parseInt(process.env.QUEUE_FRESH_SEC || "1800", 10);
+    return Number.isFinite(configured) && configured > 0 ? configured : 1800;
+})();
+const TOKEN_REUSE_SEC = (() => {
+    const configured = Number.parseInt(process.env.TOKEN_REUSE_SEC || "3300", 10);
+    return Number.isFinite(configured) && configured > 0 ? configured : 3300;
+})();
 const SYSTEM_STATUS_CACHE_SEC = 3;
 const PHONE_LOCK_TTL_SEC = 7200; // Keep lock during long calls; stale locks are auto-cleaned
 const PHONE_LOCK_CLEANUP_MS = 30000;
@@ -19,8 +30,6 @@ const MINIMUM_FREE_CHANNELS_DEFAULT = Number.parseInt(
     process.env.MINIMUM_FREE_CHANNELS || process.env.POWER_DIALER_MIN_FREE_CHANNELS || "2",
     10
 );
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 const LOG_FILE = path.join(__dirname, "dialer.log");
 const WORKER_ID = `worker-${process.pid}`;
 const LOG_KEEP_LINES = 2000;
@@ -32,6 +41,7 @@ const normalizeNum = (s) => String(s || "").replace(/[^\d+]/g, "");
 const normalizePhoneKey = (s) => String(s || "").replace(/\D/g, "");
 let logWriteCount = 0;
 let lastCampaignScanMessage = "";
+const lastQueueGateMessageByCampaign = new Map();
 
 function trimLogFileIfNeeded() {
     try {
@@ -75,14 +85,14 @@ const logCallAttemptV2 = async (companyId, campaignId, leadId, callId, status, d
         await db.execute(
             `INSERT INTO dialer_call_log 
              (company_id, campaign_id, campaignnumber_id, call_id, call_status, disposition, agent_id, started_at, attempt_no)
-             VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), ?)`,
             [companyId, campaignId, leadId, callId, status, disposition, agentId, attemptNo]
         );
 
         // Update Lead Summary
         await db.execute(
             `UPDATE campaignnumbers 
-             SET last_call_status=?, last_disposition=?, agent_connected=?, last_call_id=?, attempts_used = attempts_used + 1, last_call_started_at=NOW()
+             SET last_call_status=?, last_disposition=?, agent_connected=?, last_call_id=?, attempts_used = attempts_used + 1, last_call_started_at=UTC_TIMESTAMP()
              WHERE id=? AND company_id=?`,
             [status, disposition, agentId, callId, leadId, companyId]
         );
@@ -100,10 +110,57 @@ const db = mysql.createPool({
     connectionLimit: 10
 });
 
+let campaignColumnCache = null;
+
+const missingDbEnv = ["DB_HOST", "DB_USER", "DB_NAME"].filter((key) => {
+    return !String(process.env[key] || "").trim();
+});
+
+if (missingDbEnv.length) {
+    console.error("Dialer DB environment is missing:", missingDbEnv.join(", "));
+}
+
+async function getCampaignSelectSql() {
+    if (campaignColumnCache) {
+        return campaignColumnCache;
+    }
+
+    const [rows] = await db.execute(
+        `SELECT COLUMN_NAME
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = 'campaign'
+           AND COLUMN_NAME IN ('dn_number', 'dg_reception_number')`
+    );
+
+    const available = new Set((rows || []).map((row) => String(row.COLUMN_NAME || '').trim()));
+    const dnNumberExpr = available.has('dn_number') ? 'c.dn_number' : 'NULL AS dn_number';
+    const dgReceptionExpr = available.has('dg_reception_number') ? 'c.dg_reception_number' : 'NULL AS dg_reception_number';
+
+    campaignColumnCache = `
+        SELECT c.id, c.company_id, c.routeto, ${dnNumberExpr}, ${dgReceptionExpr}, c.dialer_mode, c.concurrent_calls,
+               COALESCE(p.outbound_prefix, 'No') AS outbound_prefix
+        FROM campaign c
+        LEFT JOIN pbxdetail p ON p.company_id = c.company_id
+        WHERE c.status='Running' AND c.is_deleted=0 AND c.dialer_mode IN ('Predictive Dialer','Power Dialer','Scheduled Dialer')
+    `;
+
+    if (!available.has('dg_reception_number')) {
+        log('[Schema] campaign.dg_reception_number is missing. Dialer will use queue route fallback until the column is added.');
+    }
+
+    if (!available.has('dn_number')) {
+        log('[Schema] campaign.dn_number is missing. Dialer will use default dialer DN.');
+    }
+
+    return campaignColumnCache;
+}
+
 // ------------ PBXDETAIL: token cache per company & TIMEZONE CHECK --------
 async function getPbxTokenByCompany(companyId) {
     const [rows] = await db.execute(
-        `SELECT id AS pbx_id, pbxurl, pbxclientid, pbxsecret, auth_token, auth_updated_at, timezone
+        `SELECT id AS pbx_id, pbxurl, pbxclientid, pbxsecret, auth_token, auth_updated_at, timezone,
+                TIMESTAMPDIFF(SECOND, auth_updated_at, UTC_TIMESTAMP()) AS token_age_sec
          FROM pbxdetail WHERE company_id=? LIMIT 1`,
         [companyId]
     );
@@ -116,8 +173,10 @@ async function getPbxTokenByCompany(companyId) {
     if (!safeUrl.match(/^https?:\/\//i)) safeUrl = `https://${safeUrl}`;
 
     if (pbx.auth_token && pbx.auth_updated_at) {
-        const ageSec = Math.floor((new Date() - new Date(pbx.auth_updated_at)) / 1000);
-        if (ageSec < TOKEN_REUSE_SEC) return { pbxurl: safeUrl, token: pbx.auth_token, timezone: pbx.timezone };
+        const ageSec = Number(pbx.token_age_sec);
+        if (Number.isFinite(ageSec) && ageSec < TOKEN_REUSE_SEC) {
+            return { pbxurl: safeUrl, token: pbx.auth_token, timezone: pbx.timezone };
+        }
     }
 
     log(`[Company ${companyId}] Refreshing 3CX Token...`);
@@ -128,19 +187,27 @@ async function getPbxTokenByCompany(companyId) {
         grant_type: "client_credentials"
     });
 
-    const resp = await axios.post(tokenUrl, body, {
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        timeout: 10000
-    });
+    let resp;
+    try {
+        resp = await axios.post(tokenUrl, body, {
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            timeout: 10000
+        });
+    } catch (e) {
+        const status = e.response?.status ? `HTTP ${e.response.status}` : e.code || e.message;
+        log(`[Company ${companyId}] 3CX token refresh failed: ${status}`);
+        throw e;
+    }
 
     const token = resp.data?.access_token;
     if (!token) throw new Error("No access_token from 3CX");
 
     await db.execute(
-        `UPDATE pbxdetail SET auth_token=?, auth_updated_at=NOW() WHERE id=? AND company_id=?`,
+        `UPDATE pbxdetail SET auth_token=?, auth_updated_at=UTC_TIMESTAMP() WHERE id=? AND company_id=?`,
         [token, pbx.pbx_id, companyId]
     );
 
+    log(`[Company ${companyId}] 3CX token refreshed and cached for ${TOKEN_REUSE_SEC} seconds.`);
     return { pbxurl: safeUrl, token, timezone: pbx.timezone };
 }
 
@@ -168,16 +235,13 @@ async function getPbxTimezone(companyId) {
 }
 
 // ------------ TIMEFRAME CHECK WITH TIMEZONE --------
-// If timezone is set, verify that NOW() (in PBX TZ) >= next_call_at (UTC)
-// If no timezone, fallback to direct MySQL NOW() comparison
+// If timezone is set, verify that UTC current time converted to PBX TZ is >= next_call_at
+// If no timezone, fallback to direct UTC comparison
 function buildTimeframeFilter(timezone) {
     if (!timezone || !isPbxTimezoneValid(timezone)) {
-        // No valid timezone: use direct UTC comparison
-        return `next_call_at IS NULL OR next_call_at <= NOW()`;
+        return `next_call_at IS NULL OR next_call_at <= UTC_TIMESTAMP()`;
     }
-    // With timezone: Convert NOW() to PBX TZ then compare
-    // CONVERT_TZ(NOW(), '+00:00', 'PBX_OFFSET') or use CAST(CONVERT_TZ(...) as DATETIME)
-    return `next_call_at IS NULL OR CONVERT_TZ(NOW(), '+00:00', '${timezone}') >= next_call_at`;
+    return `next_call_at IS NULL OR CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '${timezone}') >= next_call_at`;
 }
 
 // ------------ TIMEZONE HELPER: Check if PBX timezone is valid --------
@@ -321,7 +385,7 @@ async function rotateDidForCampaignIfConfigured({ companyId, campaignId, pbxurl,
 
     await db.execute(
         `UPDATE campaign_outbound_rule
-         SET last_used_map_id = ?, updated_at = NOW()
+         SET last_used_map_id = ?, updated_at = UTC_TIMESTAMP()
          WHERE company_id = ? AND campaign_id = ?`,
         [nextEntry.mapId, companyId, campaignId]
     );
@@ -332,17 +396,19 @@ async function rotateDidForCampaignIfConfigured({ companyId, campaignId, pbxurl,
 // ------------ Queue gate ------------
 async function queueAllowsDialing(companyId, queueDn) {
     const [rows] = await db.execute(
-        `SELECT available_agents, updated_at FROM dialer_queue_status
+        `SELECT available_agents, updated_at,
+                TIMESTAMPDIFF(SECOND, updated_at, UTC_TIMESTAMP()) AS age_sec
+         FROM dialer_queue_status
          WHERE company_id=? AND queue_dn=? LIMIT 1`,
         [companyId, queueDn]
     );
 
     if (!rows.length) return { ok: false, reason: "no_queue_status" };
 
-    const { available_agents, updated_at } = rows[0];
-    const ageSec = Math.floor((Date.now() - new Date(updated_at).getTime()) / 1000);
+    const { available_agents } = rows[0];
+    const ageSec = Number(rows[0].age_sec);
 
-    if (ageSec > QUEUE_FRESH_SEC) return { ok: false, reason: "stale_queue_status", age: ageSec, agents: available_agents };
+    if (!Number.isFinite(ageSec) || ageSec > QUEUE_FRESH_SEC) return { ok: false, reason: "stale_queue_status", age: ageSec, agents: available_agents };
     if (parseInt(available_agents, 10) <= 0) return { ok: false, reason: "no_free_agents", age: ageSec, agents: available_agents };
 
     return { ok: true, age: ageSec, agents: available_agents };
@@ -462,7 +528,7 @@ async function powerDialerAllowsDialing(companyId, campaign, dialerDn) {
 
 // ------------ Global phone lock ------------
 async function cleanupExpiredPhoneLocks() {
-    await db.execute(`DELETE FROM active_phone_locks WHERE expires_at < NOW()`);
+    await db.execute(`DELETE FROM active_phone_locks WHERE expires_at < UTC_TIMESTAMP()`);
 }
 
 async function tryAcquirePhoneLock(companyId, campaignId, leadId, phoneE164, phoneRaw, lockToken) {
@@ -473,7 +539,7 @@ async function tryAcquirePhoneLock(companyId, campaignId, leadId, phoneE164, pho
     const [res] = await db.execute(
         `INSERT IGNORE INTO active_phone_locks
          (company_id, phone_key, source_phone, lead_id, campaign_id, lock_token, locked_by, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL ? SECOND))`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND))`,
         [companyId, phoneKey, sourcePhone, leadId, campaignId, lockToken, WORKER_ID, PHONE_LOCK_TTL_SEC]
     );
 
@@ -511,12 +577,130 @@ async function getAgentExtensionById(companyId, agentId) {
     };
 }
 
+async function resolveTransferTarget(companyId, lead, queueDn) {
+    const assignedAgent = await getAgentExtensionById(companyId, lead?.agent_connected);
+    if (assignedAgent && assignedAgent.agentExt) {
+        return {
+            destination: assignedAgent.agentExt,
+            agentId: assignedAgent.agentId,
+            label: `agent ${assignedAgent.agentExt}`,
+            kind: 'agent'
+        };
+    }
+
+    const fallbackQueue = String(queueDn || '').trim();
+    if (fallbackQueue) {
+        return {
+            destination: fallbackQueue,
+            agentId: null,
+            label: `queue ${fallbackQueue}`,
+            kind: 'queue'
+        };
+    }
+
+    return {
+        destination: '',
+        agentId: null,
+        label: '',
+        kind: 'none'
+    };
+}
+
+function hasExactExtensionInCallField(value, extension) {
+    const text = String(value || "").trim();
+    const ext = String(extension || "").trim();
+    if (!text || !ext) return false;
+    const escaped = ext.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(`(^|\\D)${escaped}(\\D|$)`);
+    return regex.test(text);
+}
+
+async function getExactUserByExtension(pbxurl, token, agentExt) {
+    const ext = String(agentExt || '').trim();
+    if (!ext) return null;
+
+    const url = `${pbxurl}/xapi/v1/users?$top=50&$skip=0&$search=%22${encodeURIComponent(ext)}%22&$select=CurrentProfileName,DisplayName,Id,EmailAddress,Number`;
+    const resp = await axios.get(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 10000
+    });
+
+    const users = Array.isArray(resp.data?.value) ? resp.data.value : [];
+    return users.find((user) => String(user?.Number || '').trim() === ext) || null;
+}
+
+async function getActiveCallsForExtension(pbxurl, token, agentExt) {
+    const ext = String(agentExt || '').trim();
+    if (!ext) return [];
+
+    const url = `${pbxurl}/xapi/v1/ActiveCalls?$top=50&$skip=0&$search=%22${encodeURIComponent(ext)}%22&$count=true`;
+    const resp = await axios.get(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 10000
+    });
+
+    const calls = Array.isArray(resp.data?.value) ? resp.data.value : [];
+    return calls.filter((call) => {
+        return hasExactExtensionInCallField(call?.Caller, ext) || hasExactExtensionInCallField(call?.Callee, ext);
+    });
+}
+
+async function updateScheduledCallAgentBusy(companyId, campaignId, leadId, agentExt, reason) {
+    const retryMinutes = 2;
+    const note = `Agent busy (${agentExt}): ${reason}`;
+
+    await db.execute(
+        `UPDATE campaignnumbers
+         SET next_call_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? MINUTE)
+         WHERE id=? AND company_id=?`,
+        [retryMinutes, leadId, companyId]
+    );
+
+    await db.execute(
+        `UPDATE scheduled_calls
+         SET status='pending_agent',
+             note_text=?,
+             last_attempt_at=UTC_TIMESTAMP(),
+             attempt_count=attempt_count + 1,
+             updated_at=UTC_TIMESTAMP()
+         WHERE company_id=? AND campaign_id=? AND campaignnumber_id=?
+           AND status IN ('pending_agent', 'pending', 'queued', 'scheduled')
+         ORDER BY id DESC
+         LIMIT 1`,
+        [note, companyId, campaignId, leadId]
+    );
+}
+
+async function checkScheduledAgentAvailability(pbxurl, token, agentExt) {
+    const ext = String(agentExt || '').trim();
+    if (!ext) {
+        return { ok: true, reason: '', user: null, activeCalls: [] };
+    }
+
+    const user = await getExactUserByExtension(pbxurl, token, ext);
+    if (!user) {
+        return { ok: false, reason: `extension ${ext} not found in 3CX users`, user: null, activeCalls: [] };
+    }
+
+    const profile = String(user.CurrentProfileName || '').trim();
+    if (profile.toLowerCase() !== 'available') {
+        return { ok: false, reason: `profile is ${profile || 'unknown'}`, user, activeCalls: [] };
+    }
+
+    const activeCalls = await getActiveCallsForExtension(pbxurl, token, ext);
+    if (activeCalls.length > 0) {
+        return { ok: false, reason: `active call detected for extension ${ext}`, user, activeCalls };
+    }
+
+    return { ok: true, reason: '', user, activeCalls: [] };
+}
+
 // ------------ Queue Logic: Pick & Lock (WITH TIMEZONE AWARENESS) --------
 async function pickLead(companyId, campaignId, pbxTimezone) {
     const lockToken = uuidv4();
 
     // READY leads use PBX-local date only; time of day is ignored.
-    let timeframeSql = `(next_call_at IS NULL OR DATE(next_call_at) = CURDATE())`;
+    let timeframeSql = `(next_call_at IS NULL OR DATE(next_call_at) = UTC_DATE())`;
     const queryParams = [companyId, campaignId];
     if (pbxTimezone && isPbxTimezoneValid(pbxTimezone)) {
         const pbxCurrentDate = getCurrentDateInTimezone(pbxTimezone);
@@ -536,14 +720,14 @@ async function pickLead(companyId, campaignId, pbxTimezone) {
     // 1. Find candidate
     // Rules: READY/SCHEDULED, Time reached, Attempts left, Not DNC, Not Locked (or stale lock)
     const [rows] = await db.execute(
-        `SELECT id, phone_e164, phone_raw, attempts_used, max_attempts 
+        `SELECT id, phone_e164, phone_raw, attempts_used, max_attempts, agent_connected
          FROM campaignnumbers
          WHERE company_id=? AND campaignid=?
            AND state IN ('READY','SCHEDULED')
            AND is_dnc=0
            AND attempts_used < max_attempts
            AND ${timeframeSql}
-           AND (locked_at IS NULL OR locked_at < DATE_SUB(NOW(), INTERVAL 2 MINUTE))
+           AND (locked_at IS NULL OR locked_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 MINUTE))
          ORDER BY priority ASC, next_call_at ASC
          LIMIT 1`,
         queryParams
@@ -555,10 +739,10 @@ async function pickLead(companyId, campaignId, pbxTimezone) {
     // 2. Try to Lock
     const [res] = await db.execute(
         `UPDATE campaignnumbers
-         SET locked_at=NOW(), locked_by=?, lock_token=?, state='DIALING'
+         SET locked_at=UTC_TIMESTAMP(), locked_by=?, lock_token=?, state='DIALING'
          WHERE id=? AND company_id=?
            AND state IN ('READY','SCHEDULED')
-           AND (locked_at IS NULL OR locked_at < DATE_SUB(NOW(), INTERVAL 2 MINUTE))`, // Optimistic Lock + stale lock guard
+           AND (locked_at IS NULL OR locked_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 MINUTE))`, // Optimistic Lock + stale lock guard
         [WORKER_ID, lockToken, lead.id, companyId]
     );
 
@@ -608,7 +792,7 @@ async function pickScheduledLead(companyId, campaignId, pbxTimezone) {
     const lockToken = uuidv4();
 
     // SCHEDULED leads use full PBX-local date and time.
-    let timeframeSql = `(next_call_at IS NOT NULL AND next_call_at <= NOW())`;
+    let timeframeSql = `(next_call_at IS NOT NULL AND next_call_at <= UTC_TIMESTAMP())`;
     const queryParams = [companyId, campaignId];
     if (pbxTimezone && isPbxTimezoneValid(pbxTimezone)) {
         const pbxCurrentTime = getCurrentTimeInTimezone(pbxTimezone);
@@ -633,7 +817,7 @@ async function pickScheduledLead(companyId, campaignId, pbxTimezone) {
            AND is_dnc=0
            AND attempts_used < max_attempts
            AND ${timeframeSql}
-           AND (locked_at IS NULL OR locked_at < DATE_SUB(NOW(), INTERVAL 2 MINUTE))
+           AND (locked_at IS NULL OR locked_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 MINUTE))
          ORDER BY next_call_at ASC, priority ASC, id ASC
          LIMIT 1`,
         queryParams
@@ -644,10 +828,10 @@ async function pickScheduledLead(companyId, campaignId, pbxTimezone) {
 
     const [res] = await db.execute(
         `UPDATE campaignnumbers
-         SET locked_at=NOW(), locked_by=?, lock_token=?, state='DIALING'
+         SET locked_at=UTC_TIMESTAMP(), locked_by=?, lock_token=?, state='DIALING'
          WHERE id=? AND company_id=?
            AND state='SCHEDULED'
-           AND (locked_at IS NULL OR locked_at < DATE_SUB(NOW(), INTERVAL 2 MINUTE))`,
+           AND (locked_at IS NULL OR locked_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 MINUTE))`,
         [WORKER_ID, lockToken, lead.id, companyId]
     );
 
@@ -817,13 +1001,23 @@ async function globalMonitorTick() {
 
                 if (!myCall) {
                     // Call is gone, mark finished
-                    const durationSec = lead.last_call_started_at ? Math.floor((new Date() - new Date(lead.last_call_started_at)) / 1000) : 0;
+                    const [[durationRow]] = await db.execute(
+                        `SELECT CASE
+                            WHEN last_call_started_at IS NULL THEN 0
+                            ELSE GREATEST(TIMESTAMPDIFF(SECOND, last_call_started_at, UTC_TIMESTAMP()), 0)
+                         END AS duration_sec
+                         FROM campaignnumbers
+                         WHERE id=? AND company_id=?
+                         LIMIT 1`,
+                        [lead.id, companyId]
+                    );
+                    const durationSec = Number(durationRow?.duration_sec || 0);
                     await db.execute(
-                        `UPDATE campaignnumbers SET last_call_ended_at=NOW(), last_call_duration_sec=?, state='DISPO_REQUIRED' WHERE id=? AND company_id=?`,
+                        `UPDATE campaignnumbers SET last_call_ended_at=UTC_TIMESTAMP(), last_call_duration_sec=?, state='DISPO_REQUIRED' WHERE id=? AND company_id=?`,
                         [durationSec, lead.id, companyId]
                     );
                     await db.execute(
-                        `UPDATE dialer_call_log SET ended_at=NOW(), duration_sec=? WHERE call_id=? AND company_id=?`,
+                        `UPDATE dialer_call_log SET ended_at=UTC_TIMESTAMP(), duration_sec=? WHERE call_id=? AND company_id=?`,
                         [durationSec, originalCallId, companyId]
                     );
                     log(`[GlobalMonitor] Lead ${lead.id} call ${originalCallId} ended. Lock Released.`);
@@ -844,11 +1038,19 @@ async function globalMonitorTick() {
                                 const agentId = agents[0].agent_id;
                                 log(`[GlobalMonitor] Call ${originalCallId} CONNECTED to AGENT ${agentId} (Ext: ${ext})`);
                                 await db.execute(
-                                    `UPDATE campaignnumbers SET agent_connected=? WHERE id=? AND company_id=?`,
+                                    `UPDATE campaignnumbers
+                                     SET agent_connected=?,
+                                         last_call_status='ANSWERED',
+                                         last_call_started_at=UTC_TIMESTAMP()
+                                     WHERE id=? AND company_id=?`,
                                     [agentId, lead.id, companyId]
                                 );
                                 await db.execute(
-                                    `UPDATE dialer_call_log SET agent_id=?, call_status='ANSWERED' WHERE call_id=? AND company_id=?`,
+                                    `UPDATE dialer_call_log
+                                     SET agent_id=?,
+                                         call_status='ANSWERED',
+                                         started_at=UTC_TIMESTAMP()
+                                     WHERE call_id=? AND company_id=?`,
                                     [agentId, originalCallId, companyId]
                                 );
                             }
@@ -900,6 +1102,13 @@ async function spawnCallFlow(c, lead, queueDn, dialerDn) {
             return;
         }
 
+        if (!transferDn) {
+            log(`[Camp ${c.id}] Lead ${lead.id} has no transfer destination configured. Returning lead to READY.`);
+            await unlockLead(c.company_id, lead.id, 'READY');
+            await releasePhoneLock(lead.lockToken).catch(() => { });
+            return;
+        }
+
         const phoneLock = await tryAcquirePhoneLock(c.company_id, c.id, lead.id, lead.phone_e164, lead.phone_raw, lead.lockToken);
         if (!phoneLock.ok) {
             if (phoneLock.reason === "invalid_phone") {
@@ -940,7 +1149,7 @@ async function spawnCallFlow(c, lead, queueDn, dialerDn) {
             } else {
                 // Retry delay 15 mins instead of 1 hour
                 await db.execute(
-                    `UPDATE campaignnumbers SET next_call_at = DATE_ADD(NOW(), INTERVAL 15 MINUTE) WHERE id=? AND company_id=?`,
+                    `UPDATE campaignnumbers SET next_call_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 15 MINUTE) WHERE id=? AND company_id=?`,
                     [lead.id, c.company_id]
                 );
                 await unlockLead(c.company_id, lead.id, 'READY');
@@ -997,23 +1206,33 @@ async function spawnScheduledCallFlow(c, lead, queueDn, dialerDn) {
         }
         phoneLockAcquired = true;
 
-        let firstDestination = '';
-        let answeredAgentId = null;
-        let targetLabel = '';
-        const assignedAgent = await getAgentExtensionById(c.company_id, lead.agent_connected);
+        const transferTarget = await resolveTransferTarget(c.company_id, lead, queueDn);
+        const transferDn = String(transferTarget.destination || '').trim();
+        const answeredAgentId = transferTarget.agentId;
+        const targetLabel = transferTarget.label;
 
-        if (assignedAgent) {
-            firstDestination = assignedAgent.agentExt;
-            answeredAgentId = assignedAgent.agentId;
-            targetLabel = `agent ${assignedAgent.agentExt}`;
-        } else if (queueDn) {
-            firstDestination = queueDn;
-            targetLabel = `queue ${queueDn}`;
-        } else {
-            log(`[Camp ${c.id}] Scheduled lead ${lead.id} has no assigned agent and no queue fallback.`);
+        if (!transferDn) {
+            log(`[Camp ${c.id}] Scheduled lead ${lead.id} has no assigned agent_ext and no queue fallback.`);
             await unlockLead(c.company_id, lead.id, 'SCHEDULED');
             await releasePhoneLock(lead.lockToken).catch(() => { });
             return;
+        }
+
+        if (transferTarget.kind === 'agent') {
+            const availability = await checkScheduledAgentAvailability(pbxurl, token, transferDn);
+            if (!availability.ok) {
+                log(`[Camp ${c.id}] Scheduled lead ${lead.id} skipped - agent ${transferDn} unavailable: ${availability.reason}`, {
+                    companyId: c.company_id,
+                    campaignId: c.id,
+                    leadId: lead.id,
+                    agentExt: transferDn,
+                    activeCalls: availability.activeCalls
+                });
+                await updateScheduledCallAgentBusy(c.company_id, c.id, lead.id, transferDn, availability.reason);
+                await unlockLead(c.company_id, lead.id, 'SCHEDULED');
+                await releasePhoneLock(lead.lockToken).catch(() => { });
+                return;
+            }
         }
 
         if (String(c.outbound_prefix || '').toLowerCase() === 'yes') {
@@ -1032,12 +1251,12 @@ async function spawnScheduledCallFlow(c, lead, queueDn, dialerDn) {
             }
         }
 
-        log(`[Camp ${c.id}] Scheduled lead ${lead.id} calling ${targetLabel} first, then customer ${customerDestination}.`);
+        log(`[Camp ${c.id}] Scheduled lead ${lead.id} calling customer ${customerDestination} first, then transferring to ${targetLabel}.`);
 
         const callid = await makeCall({
             pbxurl,
             token,
-            destination: firstDestination,
+            destination: customerDestination,
             dialerDn
         });
 
@@ -1045,8 +1264,8 @@ async function spawnScheduledCallFlow(c, lead, queueDn, dialerDn) {
             pbxurl,
             token,
             callid,
-            destination: firstDestination,
-            transferDn: customerDestination,
+            destination: customerDestination,
+            transferDn,
             dialerDn
         });
 
@@ -1055,23 +1274,14 @@ async function spawnScheduledCallFlow(c, lead, queueDn, dialerDn) {
             return;
         }
 
-        if (answeredAgentId) {
-            await db.execute(
-                `UPDATE campaignnumbers
-                 SET agent_connected=?
-                 WHERE id=? AND company_id=?`,
-                [answeredAgentId, lead.id, c.company_id]
-            );
-        }
-
         await logCallAttemptV2(
             c.company_id,
             c.id,
             lead.id,
             callid,
-            answeredAgentId ? 'ANSWERED' : 'TRANSFERRED',
+            'TRANSFERRED',
             null,
-            answeredAgentId,
+            null,
             lead.attempts_used + 1
         );
 
@@ -1099,13 +1309,8 @@ async function tick() {
             lastPhoneLockCleanupAt = Date.now();
         }
 
-        const [campaigns] = await db.execute(
-            `SELECT c.id, c.company_id, c.routeto, c.dn_number, c.dg_reception_number, c.dialer_mode, c.concurrent_calls,
-                    COALESCE(p.outbound_prefix, 'No') AS outbound_prefix
-             FROM campaign c
-             LEFT JOIN pbxdetail p ON p.company_id = c.company_id
-               WHERE c.status='Running' AND c.is_deleted=0 AND c.dialer_mode IN ('Predictive Dialer','Power Dialer','Scheduled Dialer')`
-        );
+        const campaignSelectSql = await getCampaignSelectSql();
+        const [campaigns] = await db.execute(campaignSelectSql);
 
         const campaignSummary = JSON.stringify(
             (campaigns || []).map(c => ({
@@ -1162,8 +1367,14 @@ async function tick() {
                 // Check Queue
                 const gate = await queueAllowsDialing(c.company_id, queueDn);
                 if (!gate.ok) {
+                    const gateMessage = `${gate.reason}:${gate.age ?? 'na'}:${gate.agents ?? 'na'}`;
+                    if (lastQueueGateMessageByCampaign.get(c.id) !== gateMessage) {
+                        log(`[Camp ${c.id}] Predictive queue gate blocked - ${gate.reason}. Queue: ${queueDn}, Agents: ${gate.agents ?? 'n/a'}, Age: ${gate.age ?? 'n/a'}s, Max Age: ${QUEUE_FRESH_SEC}s`);
+                        lastQueueGateMessageByCampaign.set(c.id, gateMessage);
+                    }
                     continue;
                 }
+                lastQueueGateMessageByCampaign.delete(c.id);
 
                 // IMPORTANT FIX: Count how many active calls we are ALREADY ringing for this QUEUE across ALL campaigns.
                 const [ringing] = await db.execute(

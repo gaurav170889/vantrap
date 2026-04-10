@@ -69,9 +69,103 @@ $("#myInput").on("keyup", function()
 </script>
 
 <script>
+function parseUtcDateTime(value) {
+    if (!value || value === '0000-00-00 00:00:00') return null;
+    var normalized = String(value).trim().replace('T', ' ').replace('Z', '');
+    var parts = normalized.split(/[- :]/);
+    if (parts.length < 5) return null;
+    var year = parseInt(parts[0], 10);
+    var month = parseInt(parts[1], 10) - 1;
+    var day = parseInt(parts[2], 10);
+    var hour = parseInt(parts[3] || '0', 10);
+    var minute = parseInt(parts[4] || '0', 10);
+    var second = parseInt(parts[5] || '0', 10);
+    return new Date(Date.UTC(year, month, day, hour, minute, second));
+}
+
+function formatUtcDateTime(value, timezone) {
+    var dt = parseUtcDateTime(value);
+    if (!dt) return value || '';
+    var tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    try {
+        return new Intl.DateTimeFormat('en-US', {
+            timeZone: tz,
+            year: 'numeric',
+            month: 'short',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: true
+        }).format(dt);
+    } catch (e) {
+        return dt.toISOString();
+    }
+}
+
+function utcToDateTimeParts(value, timezone) {
+    var dt = parseUtcDateTime(value);
+    if (!dt) return { date: '', time: '' };
+    var tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    try {
+        var formatter = new Intl.DateTimeFormat('en-CA', {
+            timeZone: tz,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hourCycle: 'h23'
+        });
+        var parts = formatter.formatToParts(dt);
+        var values = {};
+        parts.forEach(function(part) {
+            if (part.type !== 'literal') values[part.type] = part.value;
+        });
+        return {
+            date: values.year + '-' + values.month + '-' + values.day,
+            time: values.hour + ':' + values.minute
+        };
+    } catch (e) {
+        return { date: '', time: '' };
+    }
+}
+
+function formatHistoryTimestamp(value, timezone) {
+    if (!value) return '';
+    var formatted = formatUtcDateTime(value, timezone);
+    return formatted && formatted !== '-' ? formatted : value;
+}
+
+function formatTextBlock(value) {
+    var safe = $('<div>').text(value || '-').html();
+    return '<div style="max-width:220px; white-space:pre-wrap; word-break:break-word;">' + safe + '</div>';
+}
+
+function normalizeHistoryNoteValue(value) {
+    if (!value) return '-';
+    if (typeof value !== 'string') return value;
+
+    try {
+        var parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) {
+            var notes = parsed.map(function(item) {
+                return item && item.note ? String(item.note).trim() : '';
+            }).filter(function(note) {
+                return note !== '';
+            });
+            return notes.length ? notes.join('\n') : '-';
+        }
+    } catch (e) {
+    }
+
+    return value;
+}
+
 $(document).ready(function () {
     var contactTable;
     var isSuperAdmin = <?php echo (($_SESSION['erole'] ?? $_SESSION['role'] ?? '') === 'super_admin') ? 'true' : 'false'; ?>;
+    var currentRole = <?php echo json_encode($_SESSION['erole'] ?? $_SESSION['role'] ?? ''); ?>;
+    var canViewDispositionHistory = ['super_admin', 'company_admin', 'manager'].indexOf(currentRole) !== -1;
     var companyStorageKey = 'campcontact_selected_company_<?php echo (int)($_SESSION['zid'] ?? 0); ?>';
     var urlParams = new URLSearchParams(window.location.search);
     var requestedCompanyId = urlParams.get('company_id') || '';
@@ -323,7 +417,13 @@ $(document).ready(function () {
             { data: 'feedback' },
             { data: 'call_status' },
             { data: 'last_try' },
-            { data: 'last_try_dt' },
+            {
+                data: 'last_try_dt',
+                render: function(data, type, row) {
+                    if (type !== 'display') return data;
+                    return formatUtcDateTime(data, row.timezone);
+                }
+            },
             { data: 'agent_name' },
             { 
                 data: 'disposition',
@@ -338,57 +438,53 @@ $(document).ready(function () {
             { 
                 data: null,
                 render: function(data, type, row) {
-                    if (parseInt(row.attempts_used) > 0) {
-                        // Use encodeURIComponent to safely transport notes (newlines, quotes)
-                        var safeNotes = encodeURIComponent(row.notes || "");
-                        var lastNote = "";
-                        var tooltipTitle = "";
+                    // Use encodeURIComponent to safely transport notes (newlines, quotes)
+                    var safeNotes = encodeURIComponent(row.notes || "");
+                    var lastNote = "";
+                    var tooltipTitle = "";
 
-                        // Parse Notes (JSON or String)
-                        if(row.notes) {
-                            try {
-                                var parsed = JSON.parse(row.notes);
-                                if(Array.isArray(parsed) && parsed.length > 0) {
-                                    // JSON Format: [{date, user, note}, ...]
-                                    // Last entry is at the end? logic in backend appends.
-                                    var last = parsed[parsed.length - 1];
-                                    tooltipTitle = (last.date || "") + "<br>" + (last.note || "") + "<br>By: " + (last.user || "Unknown");
+                    // Parse Notes (JSON or String)
+                    if(row.notes) {
+                        try {
+                            var parsed = JSON.parse(row.notes);
+                            if(Array.isArray(parsed) && parsed.length > 0) {
+                                var last = parsed[parsed.length - 1];
+                                tooltipTitle = (last.date || "") + "<br>" + (last.note || "") + "<br>By: " + (last.user || "Unknown");
+                            } else {
+                                throw "Not Array";
+                            }
+                        } catch(e) {
+                            var lines = row.notes.split('\n');
+                            for(var i=lines.length-1; i>=0; i--) {
+                                 if(lines[i].trim() !== "") {
+                                     lastNote = lines[i];
+                                     break;
+                                 }
+                            }
+                            if(lastNote) {
+                                var match = lastNote.match(/^\[(.*?)\] (.*?): (.*)$/);
+                                if(match) {
+                                    tooltipTitle = match[1] + "<br>" + match[3] + "<br>By: " + match[2];
                                 } else {
-                                    throw "Not Array";
-                                }
-                            } catch(e) {
-                                // Legacy String Format
-                                var lines = row.notes.split('\n');
-                                for(var i=lines.length-1; i>=0; i--) {
-                                     if(lines[i].trim() !== "") {
-                                         lastNote = lines[i];
-                                         break;
-                                     }
-                                }
-                                if(lastNote) {
-                                    // Match: [timestamp] user: note
-                                    var match = lastNote.match(/^\[(.*?)\] (.*?): (.*)$/);
-                                    if(match) {
-                                        tooltipTitle = match[1] + "<br>" + match[3] + "<br>By: " + match[2];
-                                    } else {
-                                        tooltipTitle = lastNote;
-                                    }
+                                    tooltipTitle = lastNote;
                                 }
                             }
                         }
-
-                        // Use data-tooltip-content to store HTML content, avoid 'title' attribute to prevent double tooltip
-                        var tooltipAttr = tooltipTitle ? 'data-toggle="tooltip" data-html="true" data-tooltip-content="'+tooltipTitle.replace(/"/g, '&quot;')+'"' : '';
-                        var iconHtml = tooltipTitle ? '<i class="fas fa-sticky-note text-primary mr-2" style="cursor:pointer; font-size: 1.2em;" '+tooltipAttr+'></i>' : '<span class="mr-4"></span>';
-
-                        var nextCall = row.next_call_at || '';
-                        
-                        return '<div class="d-flex align-items-center justify-content-center">' + 
-                               iconHtml + 
-                               '<button class="btn btn-sm btn-info open-dispo" data-id="'+row.id+'" data-notes="'+safeNotes+'" data-disposition="'+row.disposition+'" data-schedule="'+nextCall+'">Disposition</button>' +
-                               '</div>';
                     }
-                    return '';
+
+                    var tooltipAttr = tooltipTitle ? 'data-toggle="tooltip" data-html="true" data-tooltip-content="'+tooltipTitle.replace(/"/g, '&quot;')+'"' : '';
+                    var iconHtml = tooltipTitle ? '<i class="fas fa-sticky-note text-primary mr-2" style="cursor:pointer; font-size: 1.2em;" '+tooltipAttr+'></i>' : '<span class="mr-4"></span>';
+                    var nextCall = row.next_call_at || '';
+                    var historyButton = '';
+                    if (canViewDispositionHistory) {
+                        historyButton = '<button class="btn btn-sm btn-outline-secondary mr-2 open-dispo-history" data-id="'+row.id+'" data-company-id="'+(row.company_id || '')+'">History</button>';
+                    }
+                    
+                    return '<div class="d-flex align-items-center justify-content-center">' + 
+                           iconHtml + 
+                           historyButton +
+                           '<button class="btn btn-sm btn-info open-dispo" data-id="'+row.id+'" data-notes="'+safeNotes+'" data-disposition="'+(row.disposition || '')+'" data-schedule="'+nextCall+'" data-timezone="'+(row.timezone || 'UTC')+'">Disposition</button>' +
+                           '</div>';
                 }
             }
         ],
@@ -509,6 +605,7 @@ $(document).ready(function () {
         }
         var currentDispo = $(this).data('disposition');
         var schedule = $(this).data('schedule');
+        var timezone = $(this).data('timezone') || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 
         $('#dispo_contact_id').val(id);
         
@@ -547,9 +644,9 @@ $(document).ready(function () {
 
         // Pre-fill schedule if exists
         if(schedule && schedule !== 'null') {
-             var parts = schedule.split(' ');
-             if(parts.length >= 1) $('#dispo_date').val(parts[0]);
-             if(parts.length >= 2) $('#dispo_time').val(parts[1].substring(0, 5));
+             var parts = utcToDateTimeParts(schedule, timezone);
+             $('#dispo_date').val(parts.date);
+             $('#dispo_time').val(parts.time);
         } else {
              $('#dispo_date').val('');
              $('#dispo_time').val('');
@@ -562,6 +659,49 @@ $(document).ready(function () {
         }
 
         $('#dispositionModal').modal('show');
+    });
+
+    $('#campaignTable').on('click', '.open-dispo-history', function() {
+        var campaignnumberId = $(this).data('id') || 0;
+        var companyId = $(this).data('company-id') || '';
+        var $tbody = $('#dispositionHistoryTable tbody');
+
+        $tbody.html('<tr><td colspan="8" class="text-center">Loading history...</td></tr>');
+        $('#dispositionHistoryModal').modal('show');
+
+        $.ajax({
+            url: 'campcontact/get_disposition_history',
+            type: 'GET',
+            dataType: 'json',
+            data: {
+                campaignnumber_id: campaignnumberId,
+                company_id: companyId
+            },
+            success: function(response) {
+                if (!Array.isArray(response) || response.length === 0) {
+                    $tbody.html('<tr><td colspan="8" class="text-center">No disposition history found.</td></tr>');
+                    return;
+                }
+
+                var rows = '';
+                $.each(response, function(index, item) {
+                    rows += '<tr>' +
+                        '<td>' + $('<div>').text(formatHistoryTimestamp(item.created_at || '', item.timezone || 'UTC')).html() + '</td>' +
+                        '<td>' + $('<div>').text(item.changed_by_email || '-').html() + '</td>' +
+                        '<td>' + $('<div>').text(item.changed_by_role || '-').html() + '</td>' +
+                        '<td>' + $('<div>').text(item.action_type || '-').html() + '</td>' +
+                        '<td>' + formatTextBlock(item.previous_disposition || '-') + '</td>' +
+                        '<td>' + formatTextBlock(item.new_disposition || '-') + '</td>' +
+                        '<td>' + formatTextBlock(normalizeHistoryNoteValue(item.previous_notes)) + '</td>' +
+                        '<td>' + formatTextBlock(normalizeHistoryNoteValue(item.new_notes)) + '</td>' +
+                    '</tr>';
+                });
+                $tbody.html(rows);
+            },
+            error: function() {
+                $tbody.html('<tr><td colspan="8" class="text-center text-danger">Failed to load disposition history.</td></tr>');
+            }
+        });
     });
 
     // Show/Hide Schedule inputs based on selection

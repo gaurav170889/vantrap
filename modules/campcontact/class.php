@@ -48,7 +48,7 @@ Class Campcontact{
     {
         $role = $_SESSION['erole'] ?? $_SESSION['role'] ?? '';
         $company_id = ($role === 'super_admin')
-            ? (isset($_POST['company_id']) ? intval($_POST['company_id']) : 0)
+            ? ((isset($_POST['company_id']) && trim((string)$_POST['company_id']) !== '') ? intval($_POST['company_id']) : null)
             : ($_SESSION['company_id'] ?? 0);
         $campaign_id = isset($_POST['campaign_id']) ? intval($_POST['campaign_id']) : 0;
         $filter_type = isset($_POST['filter_type']) ? trim($_POST['filter_type']) : '';
@@ -164,6 +164,26 @@ Class Campcontact{
 
         $result = $this->modal->updateDispositionSql($id, $disposition, $notes, $date, $time);
         echo json_encode($result);
+    }
+
+    public function get_disposition_history()
+    {
+        $role = $_SESSION['erole'] ?? $_SESSION['role'] ?? '';
+        if (!in_array($role, ['super_admin', 'company_admin', 'manager'], true)) {
+            echo json_encode([]);
+            return;
+        }
+
+        $company_id = null;
+        if ($role === 'super_admin') {
+            $company_id = isset($_GET['company_id']) && $_GET['company_id'] !== '' ? intval($_GET['company_id']) : null;
+        } elseif (isset($_SESSION['company_id'])) {
+            $company_id = intval($_SESSION['company_id']);
+        }
+
+        $campaignnumberId = isset($_GET['campaignnumber_id']) ? intval($_GET['campaignnumber_id']) : 0;
+        $data = $this->modal->getDispositionHistory($campaignnumberId, $company_id);
+        echo json_encode($data);
     }
 		
 }
