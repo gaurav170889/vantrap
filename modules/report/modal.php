@@ -14,12 +14,68 @@ Class Report_modal{
 		$form_data = mysqli_real_escape_string($this->conn, trim(strip_tags($form_data)));
 		return $form_data;
 	}
+
+    private function normalizeTimezone($timezone)
+    {
+        $timezone = trim((string)$timezone);
+        if ($timezone === '') {
+            return 'UTC';
+        }
+
+        try {
+            new DateTimeZone($timezone);
+            return $timezone;
+        } catch (Exception $e) {
+            return 'UTC';
+        }
+    }
+
+    private function getCompanyTimezone($company_id = null)
+    {
+        $company_id = intval($company_id ?: ($_SESSION['company_id'] ?? 0));
+        if ($company_id <= 0) {
+            return 'UTC';
+        }
+
+        $sql = "SELECT timezone FROM pbxdetail WHERE company_id = $company_id LIMIT 1";
+        $res = mysqli_query($this->conn, $sql);
+        if ($res && mysqli_num_rows($res) > 0) {
+            $row = mysqli_fetch_assoc($res);
+            return $this->normalizeTimezone($row['timezone'] ?? 'UTC');
+        }
+
+        return 'UTC';
+    }
+
+    private function buildUtcRangeFromDates($start_date, $end_date, $company_id = null)
+    {
+        $timezone = new DateTimeZone($this->getCompanyTimezone($company_id));
+        $utcTimezone = new DateTimeZone('UTC');
+        $startLocal = new DateTime(trim((string)$start_date) . ' 00:00:00', $timezone);
+        $endLocal = new DateTime(trim((string)$end_date) . ' 23:59:59', $timezone);
+        $startLocal->setTimezone($utcTimezone);
+        $endLocal->setTimezone($utcTimezone);
+
+        return [
+            'start' => $startLocal->format('Y-m-d H:i:s'),
+            'end' => $endLocal->format('Y-m-d H:i:s')
+        ];
+    }
+
+    private function buildUtcRangeForToday($company_id = null)
+    {
+        $timezone = new DateTimeZone($this->getCompanyTimezone($company_id));
+        $todayLocal = new DateTime('today', $timezone);
+        $dateText = $todayLocal->format('Y-m-d');
+        return $this->buildUtcRangeFromDates($dateText, $dateText, $company_id);
+    }
 	
 	public function fetch($company_id = null)
     {
         $data = [];
 		$id=1;
-		$where = "`r_externalno` IS NOT NULL AND `r_externalno` <> '' AND `r_startdt`= CURDATE() AND (`r_cfdname` IS NOT NULL AND `r_cfdname` <> '')";
+        $todayRange = $this->buildUtcRangeForToday($company_id);
+		$where = "`r_externalno` IS NOT NULL AND `r_externalno` <> '' AND `r_startdt` >= '{$todayRange['start']}' AND `r_startdt` <= '{$todayRange['end']}' AND (`r_cfdname` IS NOT NULL AND `r_cfdname` <> '')";
 		if ($company_id !== null) {
 			$company_id = intval($company_id);
 			$where .= " AND `company_id` = $company_id";
@@ -42,7 +98,8 @@ Class Report_modal{
         $data = [];
 		$id=1;
         if (isset($start_date) && isset($end_date)) {
-			$where = "`r_externalno` IS NOT NULL AND `r_externalno` <> '' AND `r_startdt` >= '$start_date' AND `r_startdt` <= '$end_date' AND (`r_cfdname` IS NOT NULL AND `r_cfdname` <> '')";
+            $range = $this->buildUtcRangeFromDates($start_date, $end_date, $company_id);
+			$where = "`r_externalno` IS NOT NULL AND `r_externalno` <> '' AND `r_startdt` >= '{$range['start']}' AND `r_startdt` <= '{$range['end']}' AND (`r_cfdname` IS NOT NULL AND `r_cfdname` <> '')";
 			if ($company_id !== null) {
 				$company_id = intval($company_id);
 				$where .= " AND `company_id` = $company_id";
@@ -68,7 +125,8 @@ Class Report_modal{
         $data = [];
 		$id=1;
         if (isset($start_date) && isset($end_date)) {
-			$where = "`r_externalno` IS NOT NULL AND `r_externalno` <> '' AND `r_startdt` >= '$start_date' AND `r_startdt` <= '$end_date' AND (`r_cfdname` IS NOT NULL AND `r_cfdname` <> '')";
+            $range = $this->buildUtcRangeFromDates($start_date, $end_date, $company_id);
+			$where = "`r_externalno` IS NOT NULL AND `r_externalno` <> '' AND `r_startdt` >= '{$range['start']}' AND `r_startdt` <= '{$range['end']}' AND (`r_cfdname` IS NOT NULL AND `r_cfdname` <> '')";
 			if ($company_id !== null) {
 				$company_id = intval($company_id);
 				$where .= " AND `company_id` = $company_id";
@@ -94,13 +152,14 @@ Class Report_modal{
         $data = [];
 		$id=1;
         if (isset($start_date) && isset($end_date)) {
+            $range = $this->buildUtcRangeFromDates($start_date, $end_date);
 			$grpquery= "SELECT queueno FROM queue WHERE q_id = $grpid";
 			$queryresut = $this->conn->query($grpquery);
 			$grpdata = mysqli_fetch_array($queryresut,MYSQLI_NUM);
 			$grpname=$grpdata[0];
 			
 			// Fetch raw data for aggregation in PHP
-            $query = "SELECT a.agent_ext, r.ratings_json FROM agent a LEFT JOIN rate r ON a.agent_ext = r.agentno WHERE r.created_at >= '$start_date 00:00:00' AND r.created_at <= '$end_date 23:59:59' AND r.queue='$grpname'";
+            $query = "SELECT a.agent_ext, r.ratings_json FROM agent a LEFT JOIN rate r ON a.agent_ext = r.agentno WHERE r.created_at >= '{$range['start']}' AND r.created_at <= '{$range['end']}' AND r.queue='$grpname'";
             
 			// Initialize aggregation array
 			$agent_stats = [];
@@ -171,13 +230,14 @@ Class Report_modal{
         $data = [];
 		$id=1;
         if (isset($start_date) && isset($end_date)) {
+            $range = $this->buildUtcRangeFromDates($start_date, $end_date);
 			$agentquery= "SELECT agent_ext FROM agent WHERE agent_id = $agentid";
 			$agentresut = $this->conn->query($agentquery);
 			$agentdata = mysqli_fetch_array($agentresut,MYSQLI_NUM);
 			$agentext=$agentdata[0];
 			
             // Fetch raw data
-             $query = "SELECT a.agent_ext, r.ratings_json FROM agent a LEFT JOIN rate r ON a.agent_ext = r.agentno WHERE r.created_at >= '$start_date 00:00:00' AND r.created_at <= '$end_date 23:59:59' AND r.queue='$grpid' AND r.agentid='$agentid'";
+             $query = "SELECT a.agent_ext, r.ratings_json FROM agent a LEFT JOIN rate r ON a.agent_ext = r.agentno WHERE r.created_at >= '{$range['start']}' AND r.created_at <= '{$range['end']}' AND r.queue='$grpid' AND r.agentid='$agentid'";
 
             $agent_stats = [];
 
@@ -310,11 +370,10 @@ Class Report_modal{
 	public function getdata($table)
 	{
 		// Default to today's date range
-		$start_date = date('Y-m-d'); 
-		$end_date = date('Y-m-d');
+        $range = $this->buildUtcRangeForToday($_SESSION['company_id'] ?? null);
 
 		// Fetch raw data
-		$query = "SELECT a.agent_ext, r.ratings_json FROM agent a LEFT JOIN $table r ON a.agent_ext = r.agentno WHERE r.created_at >= '$start_date 00:00:00' AND r.created_at <= '$end_date 23:59:59'";
+		$query = "SELECT a.agent_ext, r.ratings_json FROM agent a LEFT JOIN $table r ON a.agent_ext = r.agentno WHERE r.created_at >= '{$range['start']}' AND r.created_at <= '{$range['end']}'";
 		
         $agent_stats = [];
 

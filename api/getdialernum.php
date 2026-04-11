@@ -1,12 +1,20 @@
 <?php
 
-date_default_timezone_set('Asia/Kolkata'); // Set timezone to India
-
 require_once "database.php";
 global $conn;
 
-$currentDay = date('l'); // e.g., "Monday"
-$currentTime = date('H:i:s'); // e.g., "14:30:00"
+function normalize_timezone_name($timezone) {
+    $timezone = trim((string)$timezone);
+    if ($timezone === '') {
+        return 'UTC';
+    }
+    try {
+        new DateTimeZone($timezone);
+        return $timezone;
+    } catch (Exception $e) {
+        return 'UTC';
+    }
+}
 
 // Initialize default failure response
 $response = [
@@ -18,9 +26,10 @@ $response = [
 ];
 
 // Step 1: Fetch the currently running campaign
-$query = "SELECT id, routeto, weekdays, starttime, stoptime 
-          FROM campaign 
-          WHERE status = 'Running' 
+$query = "SELECT c.id, c.company_id, c.routeto, c.weekdays, c.starttime, c.stoptime, p.timezone
+          FROM campaign c
+          LEFT JOIN pbxdetail p ON c.company_id = p.company_id
+          WHERE c.status = 'Running' 
           LIMIT 1";
 
 $result = mysqli_query($conn, $query);
@@ -29,10 +38,23 @@ if ($result && mysqli_num_rows($result) > 0) {
     $row = mysqli_fetch_assoc($result);
 
     $campaignId = $row['id'];
+    $companyId = intval($row['company_id'] ?? 0);
     $routeto = $row['routeto'];
     $startTime = $row['starttime'];
     $endTime = $row['stoptime'];
     $weekdaysJson = $row['weekdays'];
+    $timezoneName = normalize_timezone_name($row['timezone'] ?? 'UTC');
+    $localTimezone = new DateTimeZone($timezoneName);
+    $utcTimezone = new DateTimeZone('UTC');
+    $nowLocal = new DateTime('now', $localTimezone);
+    $currentDay = $nowLocal->format('l');
+    $currentTime = $nowLocal->format('H:i:s');
+    $dayStartUtc = clone $nowLocal;
+    $dayStartUtc->setTime(0, 0, 0);
+    $dayEndUtc = clone $nowLocal;
+    $dayEndUtc->setTime(23, 59, 59);
+    $dayStartUtc->setTimezone($utcTimezone);
+    $dayEndUtc->setTimezone($utcTimezone);
 
     $allowedDays = json_decode($weekdaysJson, true);
 
@@ -42,7 +64,10 @@ if ($result && mysqli_num_rows($result) > 0) {
             $numQuery = "SELECT id, number, calltry1, calltry2, calltry3 
                          FROM campaignnumbers 
                          WHERE campaignid = '$campaignId' 
-                           AND calltry1 = 0 AND calltry2 = 0 AND calltry3 = 0 AND DATE(inserttime) = CURDATE()
+                           AND calltry1 = 0 AND calltry2 = 0 AND calltry3 = 0
+                           AND company_id = '$companyId'
+                           AND inserttime >= '" . mysqli_real_escape_string($conn, $dayStartUtc->format('Y-m-d H:i:s')) . "'
+                           AND inserttime <= '" . mysqli_real_escape_string($conn, $dayEndUtc->format('Y-m-d H:i:s')) . "'
                          LIMIT 1";
             $numResult = mysqli_query($conn, $numQuery);
 
@@ -65,7 +90,7 @@ if ($result && mysqli_num_rows($result) > 0) {
 
                 // Update the calltry column to 1 if applicable
                 if ($tryUpdate != '') {
-                    $dttime = date('Y-m-d H:i:s');
+                    $dttime = gmdate('Y-m-d H:i:s');
                     $updateQuery = "UPDATE campaignnumbers 
                                     SET $tryUpdate = 1 ,$dtUpdate = '$dttime'
                                     WHERE id = '$campaignNumberId'";
@@ -101,7 +126,7 @@ if ($result && mysqli_num_rows($result) > 0) {
                     // Increment usage for chosen prefix
                     $updSql = "
                         UPDATE campaign_prefix_usage
-                        SET usage_count = usage_count + 1, last_used = NOW()
+                        SET usage_count = usage_count + 1, last_used = UTC_TIMESTAMP()
                         WHERE campaignid = {$campaignId} AND prefix = {$currentPrefix}
                         LIMIT 1
                     ";

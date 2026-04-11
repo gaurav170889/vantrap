@@ -64,37 +64,66 @@ Class Dashboard_modal{
 		return " AND {$prefix}company_id = $company_id";
 	}
 
-	private function getDateRange($period)
+	private function normalizeTimezone($timezone)
 	{
-		$today = new DateTime('today');
-		$start = clone $today;
-		$end = clone $today;
+		$timezone = trim((string)$timezone);
+		if ($timezone === '') {
+			return 'UTC';
+		}
+
+		try {
+			new DateTimeZone($timezone);
+			return $timezone;
+		} catch (Exception $e) {
+			return 'UTC';
+		}
+	}
+
+	private function getCompanyTimezone($company_id)
+	{
+		$company_id = intval($company_id);
+		if ($company_id <= 0 || !$this->hasTable('pbxdetail') || !$this->hasColumn('pbxdetail', 'timezone')) {
+			return 'UTC';
+		}
+
+		$row = $this->fetchAssoc("SELECT timezone FROM pbxdetail WHERE company_id = $company_id LIMIT 1");
+		return $this->normalizeTimezone($row['timezone'] ?? 'UTC');
+	}
+
+	private function getDateRange($period, $company_id = null)
+	{
+		$timezoneName = $this->getCompanyTimezone($company_id);
+		$timezone = new DateTimeZone($timezoneName);
+		$utcTimezone = new DateTimeZone('UTC');
+		$nowLocal = new DateTime('now', $timezone);
+		$start = clone $nowLocal;
+		$end = clone $nowLocal;
 		$label = 'Today';
 
 		switch ($period) {
 			case 'this_week':
-				$start = new DateTime('monday this week');
-				$end = new DateTime('sunday this week');
+				$start->modify('monday this week');
+				$end->modify('sunday this week');
 				$label = 'This Week';
 				break;
 			case 'last_week':
-				$start = new DateTime('monday last week');
-				$end = new DateTime('sunday last week');
+				$start->modify('monday last week');
+				$end->modify('sunday last week');
 				$label = 'Last Week';
 				break;
 			case 'this_month':
-				$start = new DateTime('first day of this month');
-				$end = new DateTime('last day of this month');
+				$start->modify('first day of this month');
+				$end->modify('last day of this month');
 				$label = 'This Month';
 				break;
 			case 'last_month':
-				$start = new DateTime('first day of last month');
-				$end = new DateTime('last day of last month');
+				$start->modify('first day of last month');
+				$end->modify('last day of last month');
 				$label = 'Last Month';
 				break;
 			case 'this_year':
-				$start = new DateTime(date('Y-01-01'));
-				$end = new DateTime(date('Y-12-31'));
+				$start->setDate(intval($nowLocal->format('Y')), 1, 1);
+				$end->setDate(intval($nowLocal->format('Y')), 12, 31);
 				$label = 'This Year';
 				break;
 			default:
@@ -102,12 +131,23 @@ Class Dashboard_modal{
 				break;
 		}
 
+		$start->setTime(0, 0, 0);
+		$end->setTime(23, 59, 59);
+
+		$startUtc = clone $start;
+		$endUtc = clone $end;
+		$startUtc->setTimezone($utcTimezone);
+		$endUtc->setTimezone($utcTimezone);
+
 		return [
 			'key' => $period,
 			'label' => $label,
-			'start' => $start->format('Y-m-d'),
-			'end' => $end->format('Y-m-d'),
-			'display' => $start->format('d M Y') . ' - ' . $end->format('d M Y')
+			'timezone' => $timezoneName,
+			'start' => $startUtc->format('Y-m-d H:i:s'),
+			'end' => $endUtc->format('Y-m-d H:i:s'),
+			'start_local' => $start->format('Y-m-d H:i:s'),
+			'end_local' => $end->format('Y-m-d H:i:s'),
+			'display' => $start->format('d M Y') . ' - ' . $end->format('d M Y') . ' (' . $timezoneName . ')'
 		];
 	}
 
@@ -227,7 +267,7 @@ Class Dashboard_modal{
 
 		$result['available'] = true;
 		$dateExpr = $this->buildDateExpression('dialer_call_log', 'started_at', 'created_at');
-		$dateWhere = "$dateExpr >= '{$range['start']} 00:00:00' AND $dateExpr <= '{$range['end']} 23:59:59'";
+		$dateWhere = "$dateExpr >= '{$range['start']}' AND $dateExpr <= '{$range['end']}'";
 		$companyWhere = $this->buildCompanyWhere('dialer_call_log', $company_id);
 		$latestRow = $this->fetchAssoc("SELECT MAX($dateExpr) AS latest_recorded_at FROM dialer_call_log WHERE 1=1$companyWhere");
 		$result['latest_recorded_at'] = trim((string)($latestRow['latest_recorded_at'] ?? ''));
@@ -313,7 +353,7 @@ Class Dashboard_modal{
 			return $result;
 		}
 		$dateExpr = $this->buildDateExpression('rate', 'created_at', 'start_date');
-		$dateWhere = "$dateExpr >= '{$range['start']} 00:00:00' AND $dateExpr <= '{$range['end']} 23:59:59'";
+		$dateWhere = "$dateExpr >= '{$range['start']}' AND $dateExpr <= '{$range['end']}'";
 		$companyWhere = $this->buildCompanyWhere('rate', $company_id);
 		$latestRow = $this->fetchAssoc("SELECT MAX($dateExpr) AS latest_recorded_at FROM rate WHERE 1=1$companyWhere");
 		$result['latest_recorded_at'] = trim((string)($latestRow['latest_recorded_at'] ?? ''));
@@ -411,7 +451,7 @@ Class Dashboard_modal{
 		if ($this->hasTable('dialer_call_log') && $this->hasColumn('dialer_call_log', 'disposition')) {
 			$result['available'] = true;
 			$dateExpr = $this->buildDateExpression('dialer_call_log', 'started_at', 'created_at');
-			$dateWhere = "$dateExpr >= '{$range['start']} 00:00:00' AND $dateExpr <= '{$range['end']} 23:59:59'";
+			$dateWhere = "$dateExpr >= '{$range['start']}' AND $dateExpr <= '{$range['end']}'";
 			$companyWhere = $this->buildCompanyWhere('dialer_call_log', $company_id);
 			$filledWhere = "$dateWhere$companyWhere AND TRIM(COALESCE(disposition, '')) <> ''";
 
@@ -439,7 +479,7 @@ Class Dashboard_modal{
 				}
 			}
 			$dateExpr = !empty($dateCandidates) ? 'COALESCE(' . implode(',', $dateCandidates) . ')' : 'NULL';
-			$dateWhere = "$dateExpr >= '{$range['start']} 00:00:00' AND $dateExpr <= '{$range['end']} 23:59:59'";
+			$dateWhere = "$dateExpr >= '{$range['start']}' AND $dateExpr <= '{$range['end']}'";
 			$companyWhere = $this->buildCompanyWhere('campaignnumbers', $company_id);
 			$filledWhere = "$dateWhere$companyWhere AND TRIM(COALESCE(last_disposition, '')) <> ''";
 
@@ -544,7 +584,7 @@ Class Dashboard_modal{
 
 	public function getDashboardData($company_id, $period)
 	{
-		$range = $this->getDateRange($period);
+		$range = $this->getDateRange($period, $company_id);
 		$directory = $this->getAgentDirectory($company_id);
 		$outbound = $this->getOutboundAnalytics($company_id, $range);
 		$ratings = $this->getRatingAnalytics($company_id, $range, $outbound);
@@ -564,7 +604,7 @@ Class Dashboard_modal{
 
 	public function getDebugSnapshot($company_id, $period)
 	{
-		$range = $this->getDateRange($period);
+		$range = $this->getDateRange($period, $company_id);
 		$dialerDateExpr = $this->buildDateExpression('dialer_call_log', 'started_at', 'created_at');
 		$rateDateExpr = $this->buildDateExpression('rate', 'created_at', 'start_date');
 
@@ -587,7 +627,7 @@ Class Dashboard_modal{
 		];
 
 		if ($debug['dialer']['table_exists']) {
-			$dateWhere = "$dialerDateExpr >= '{$range['start']} 00:00:00' AND $dialerDateExpr <= '{$range['end']} 23:59:59'";
+			$dateWhere = "$dialerDateExpr >= '{$range['start']}' AND $dialerDateExpr <= '{$range['end']}'";
 			$debug['dialer']['summary'] = $this->fetchAssoc(
 				"SELECT COUNT(*) AS total_rows,
 				MIN($dialerDateExpr) AS min_period_date,
@@ -612,7 +652,7 @@ Class Dashboard_modal{
 		}
 
 		if ($debug['rate']['table_exists']) {
-			$dateWhere = "$rateDateExpr >= '{$range['start']} 00:00:00' AND $rateDateExpr <= '{$range['end']} 23:59:59'";
+			$dateWhere = "$rateDateExpr >= '{$range['start']}' AND $rateDateExpr <= '{$range['end']}'";
 			$debug['rate']['summary'] = $this->fetchAssoc(
 				"SELECT COUNT(*) AS total_rows,
 				MIN($rateDateExpr) AS min_period_date,

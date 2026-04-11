@@ -62,13 +62,13 @@ $insert_sql = "
     INSERT INTO dialer_queue_status
       (company_id, pbx_id, queue_dn, available_agents, loggedin_numlist_raw, loggedin_extlist_raw, raw_querystring, updated_at)
     VALUES
-      (?, ?, ?, ?, ?, ?, ?, NOW())
+      (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())
     ON DUPLICATE KEY UPDATE
       available_agents = VALUES(available_agents),
       loggedin_numlist_raw = VALUES(loggedin_numlist_raw),
       loggedin_extlist_raw = VALUES(loggedin_extlist_raw),
       raw_querystring = VALUES(raw_querystring),
-      updated_at = NOW()
+      updated_at = UTC_TIMESTAMP()
 ";
 
 $upsert_stmt = mysqli_prepare($conn, $insert_sql);
