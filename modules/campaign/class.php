@@ -435,6 +435,10 @@ Class Campaign{
             $companies = $this->modal->getCompanies();
         }
 
+        $role = $_SESSION['erole'] ?? $_SESSION['role'] ?? '';
+        $company_id = ($role === 'super_admin') ? null : (isset($_SESSION['company_id']) ? intval($_SESSION['company_id']) : null);
+        $campaigns = in_array($role, ['super_admin', 'company_admin', 'manager'], true) ? $this->modal->getDialedAnsweredCampaigns($company_id) : [];
+
         include("view/notdialed.php");
         include('modules/common/campaignfooter.php');
     }
@@ -450,8 +454,41 @@ Class Campaign{
             $company_id = intval($_SESSION['company_id']);
         }
 
-        $data = $this->modal->getNotDialedNumbers($company_id);
+        $campaign_id = isset($_GET['campaign_id']) && $_GET['campaign_id'] !== '' ? intval($_GET['campaign_id']) : 0;
+        $state_filter = isset($_GET['state_filter']) ? trim($_GET['state_filter']) : '';
+        $last_call_filter = isset($_GET['last_call_filter']) ? trim($_GET['last_call_filter']) : '';
+        $date_filter = isset($_GET['date_filter']) ? trim($_GET['date_filter']) : 'today';
+        $custom_start = isset($_GET['custom_start']) ? trim($_GET['custom_start']) : '';
+        $custom_end = isset($_GET['custom_end']) ? trim($_GET['custom_end']) : '';
+
+        $data = $this->modal->getNotDialedNumbers($company_id, $campaign_id, $state_filter, $last_call_filter, $date_filter, $custom_start, $custom_end);
         echo json_encode($data);
+    }
+
+    public function move_not_dialed_to_ready()
+    {
+        $role = $_SESSION['erole'] ?? $_SESSION['role'] ?? '';
+        if (!in_array($role, ['super_admin', 'company_admin', 'manager'], true)) {
+            echo json_encode(['success' => false, 'message' => 'Access denied']);
+            return;
+        }
+
+        $company_id = null;
+        if ($role === 'super_admin') {
+            $company_id = isset($_POST['company_id']) && $_POST['company_id'] !== '' ? intval($_POST['company_id']) : null;
+        } elseif (isset($_SESSION['company_id'])) {
+            $company_id = intval($_SESSION['company_id']);
+        }
+
+        $campaign_id = isset($_POST['campaign_id']) && $_POST['campaign_id'] !== '' ? intval($_POST['campaign_id']) : 0;
+        $state_filter = isset($_POST['state_filter']) ? trim($_POST['state_filter']) : '';
+        $last_call_filter = isset($_POST['last_call_filter']) ? trim($_POST['last_call_filter']) : '';
+        $date_filter = isset($_POST['date_filter']) ? trim($_POST['date_filter']) : 'today';
+        $custom_start = isset($_POST['custom_start']) ? trim($_POST['custom_start']) : '';
+        $custom_end = isset($_POST['custom_end']) ? trim($_POST['custom_end']) : '';
+
+        $result = $this->modal->moveNotDialedNumbersToReady($company_id, $campaign_id, $state_filter, $last_call_filter, $date_filter, $custom_start, $custom_end);
+        echo json_encode($result);
     }
 
     // --- DIALED ANSWERED NUMBERS ---
@@ -466,6 +503,14 @@ Class Campaign{
         if (isset($_SESSION['erole']) && $_SESSION['erole'] == 'super_admin') {
             $companies = $this->modal->getCompanies();
         }
+
+        $role = $_SESSION['erole'] ?? $_SESSION['role'] ?? '';
+        $company_id = ($role === 'super_admin') ? null : (isset($_SESSION['company_id']) ? intval($_SESSION['company_id']) : null);
+        $showDialedFilters = in_array($role, ['super_admin', 'company_admin', 'manager', 'uagent'], true);
+        $sessionAgentId = ($role === 'uagent') ? $this->modal->getSessionAgentId() : 0;
+        $campaigns = in_array($role, ['super_admin', 'company_admin', 'manager'], true) ? $this->modal->getDialedAnsweredCampaigns($company_id) : [];
+        $agents = in_array($role, ['super_admin', 'company_admin', 'manager'], true) ? $this->modal->getDialedAnsweredAgents($company_id) : [];
+        $dispositions = $showDialedFilters ? $this->modal->getDialedAnsweredDispositions($company_id, 0, $sessionAgentId) : [];
 
         include("view/dialednumbers.php");
         include('modules/common/campaignfooter.php');
@@ -482,7 +527,65 @@ Class Campaign{
             $company_id = intval($_SESSION['company_id']);
         }
 
-        $data = $this->modal->getDialedAnsweredNumbers($company_id);
+        $campaign_id = isset($_GET['campaign_id']) && $_GET['campaign_id'] !== '' ? intval($_GET['campaign_id']) : 0;
+        $agent_id = isset($_GET['agent_id']) && $_GET['agent_id'] !== '' ? intval($_GET['agent_id']) : 0;
+        $date_filter = isset($_GET['date_filter']) ? trim($_GET['date_filter']) : 'today';
+        $custom_start = isset($_GET['custom_start']) ? trim($_GET['custom_start']) : '';
+        $custom_end = isset($_GET['custom_end']) ? trim($_GET['custom_end']) : '';
+        $disposition_filter = isset($_GET['disposition_filter']) ? trim($_GET['disposition_filter']) : '';
+
+        if ($role === 'uagent') {
+            $agent_id = $this->modal->getSessionAgentId();
+        }
+
+        $data = $this->modal->getDialedAnsweredNumbers($company_id, $campaign_id, $agent_id, $date_filter, $custom_start, $custom_end, $disposition_filter);
+        echo json_encode($data);
+    }
+
+    public function get_dialed_filter_options()
+    {
+        $role = $_SESSION['erole'] ?? $_SESSION['role'] ?? '';
+        if (!in_array($role, ['super_admin', 'company_admin', 'manager', 'uagent'], true)) {
+            echo json_encode(['campaigns' => [], 'agents' => [], 'dispositions' => []]);
+            return;
+        }
+
+        $company_id = null;
+        $agent_id = 0;
+        if ($role === 'super_admin') {
+            $company_id = isset($_GET['company_id']) && $_GET['company_id'] !== '' ? intval($_GET['company_id']) : null;
+        } elseif (isset($_SESSION['company_id'])) {
+            $company_id = intval($_SESSION['company_id']);
+        }
+        if ($role === 'uagent') {
+            $agent_id = $this->modal->getSessionAgentId();
+        }
+
+        $data = [
+            'campaigns' => in_array($role, ['super_admin', 'company_admin', 'manager'], true) ? $this->modal->getDialedAnsweredCampaigns($company_id) : [],
+            'agents' => in_array($role, ['super_admin', 'company_admin', 'manager'], true) ? $this->modal->getDialedAnsweredAgents($company_id) : [],
+            'dispositions' => $this->modal->getDialedAnsweredDispositions($company_id, 0, $agent_id)
+        ];
+        echo json_encode($data);
+    }
+
+    public function get_disposition_history()
+    {
+        $role = $_SESSION['erole'] ?? $_SESSION['role'] ?? '';
+        if (!in_array($role, ['super_admin', 'company_admin', 'manager'], true)) {
+            echo json_encode([]);
+            return;
+        }
+
+        $company_id = null;
+        if ($role === 'super_admin') {
+            $company_id = isset($_GET['company_id']) && $_GET['company_id'] !== '' ? intval($_GET['company_id']) : null;
+        } elseif (isset($_SESSION['company_id'])) {
+            $company_id = intval($_SESSION['company_id']);
+        }
+
+        $campaignnumberId = isset($_GET['campaignnumber_id']) ? intval($_GET['campaignnumber_id']) : 0;
+        $data = $this->modal->getDispositionHistory($campaignnumberId, $company_id);
         echo json_encode($data);
     }
 

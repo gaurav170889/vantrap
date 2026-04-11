@@ -73,6 +73,38 @@
   </div>
 </div>
 
+<div class="modal fade" id="dispositionHistoryModal" tabindex="-1" role="dialog" aria-labelledby="dispositionHistoryModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="dispositionHistoryModalLabel">Disposition History</h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="table-responsive">
+          <table class="table table-striped table-bordered mb-0" id="dispositionHistoryTable">
+            <thead>
+              <tr>
+                <th>Changed At</th>
+                <th>User</th>
+                <th>Role</th>
+                <th>Action</th>
+                <th>Previous Disposition</th>
+                <th>New Disposition</th>
+                <th>Previous Notes</th>
+                <th>New Notes</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <style>
   .contact-filter-panel {
     background: linear-gradient(135deg, #f8fbff 0%, #eef5ff 100%);

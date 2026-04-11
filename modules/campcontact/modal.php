@@ -6,7 +6,7 @@ Class Campcontact_modal{
 	public function __construct()
 	{
 		$this->conn = ConnectDB();
-		
+		$this->ensureDispositionHistoryTable();
 	}
 	
 	public function htmlvalidation($form_data){
@@ -32,19 +32,259 @@ Class Campcontact_modal{
         return ($res && mysqli_num_rows($res) > 0);
     }
 
-    private function resolveScheduledDateTime($callbackDate, $callbackTime)
+    private function isAutoIncrementColumn($table, $column)
     {
-        $callbackDate = trim((string)$callbackDate);
-        $callbackTime = trim((string)$callbackTime);
+        $table = preg_replace('/[^a-zA-Z0-9_]/', '', $table);
+        $column = preg_replace('/[^a-zA-Z0-9_]/', '', $column);
+        $sql = "SHOW COLUMNS FROM `$table` LIKE '$column'";
+        $res = mysqli_query($this->conn, $sql);
+        if (!$res || mysqli_num_rows($res) === 0) {
+            return false;
+        }
 
-        if ($callbackDate !== '' && $callbackTime !== '') {
-            $timestamp = strtotime($callbackDate . ' ' . $callbackTime);
-            if ($timestamp !== false) {
-                return date('Y-m-d H:i:s', $timestamp);
+        $row = mysqli_fetch_assoc($res);
+        $extra = strtolower(trim((string)($row['Extra'] ?? '')));
+        return strpos($extra, 'auto_increment') !== false;
+    }
+
+    private function getNextNumericId($table, $column = 'id')
+    {
+        $table = preg_replace('/[^a-zA-Z0-9_]/', '', $table);
+        $column = preg_replace('/[^a-zA-Z0-9_]/', '', $column);
+        $sql = "SELECT COALESCE(MAX(`$column`), 0) + 1 AS next_id FROM `$table`";
+        $res = mysqli_query($this->conn, $sql);
+        if (!$res || mysqli_num_rows($res) === 0) {
+            return 1;
+        }
+
+        $row = mysqli_fetch_assoc($res);
+        return max(1, intval($row['next_id'] ?? 1));
+    }
+
+    private function ensureDispositionHistoryTable()
+    {
+        $sql = "CREATE TABLE IF NOT EXISTS disposition_history (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            company_id INT NOT NULL,
+            campaign_id INT DEFAULT NULL,
+            campaignnumber_id INT NOT NULL,
+            phone_e164 VARCHAR(32) DEFAULT NULL,
+            action_type VARCHAR(50) NOT NULL DEFAULT 'updated',
+            previous_disposition VARCHAR(255) DEFAULT NULL,
+            new_disposition VARCHAR(255) DEFAULT NULL,
+            previous_notes LONGTEXT DEFAULT NULL,
+            new_notes LONGTEXT DEFAULT NULL,
+            changed_by_user_id INT DEFAULT NULL,
+            changed_by_email VARCHAR(255) DEFAULT NULL,
+            changed_by_role VARCHAR(50) DEFAULT NULL,
+            ip_address VARCHAR(45) DEFAULT NULL,
+            forwarded_ip VARCHAR(255) DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            KEY idx_contact_created (campaignnumber_id, created_at),
+            KEY idx_company_campaign (company_id, campaign_id),
+            KEY idx_changed_by (changed_by_user_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+
+        @mysqli_query($this->conn, $sql);
+    }
+
+    private function normalizeNotesForHistory($notes)
+    {
+        $notes = (string)$notes;
+        return trim($notes);
+    }
+
+    private function getCurrentUserMeta()
+    {
+        $userId = intval($_SESSION['zid'] ?? 0);
+        $email = 'Unknown';
+        $role = trim((string)($_SESSION['erole'] ?? ($_SESSION['role'] ?? '')));
+
+        if ($userId > 0 && $this->hasTable('users')) {
+            $res = mysqli_query($this->conn, "SELECT user_email FROM users WHERE id = $userId LIMIT 1");
+            if ($res && mysqli_num_rows($res) > 0) {
+                $row = mysqli_fetch_assoc($res);
+                $email = trim((string)($row['user_email'] ?? '')) ?: 'Unknown';
             }
         }
 
-        return date('Y-m-d H:i:s', strtotime('+1 hour'));
+        return [
+            'user_id' => $userId,
+            'email' => $email,
+            'role' => $role
+        ];
+    }
+
+    private function resolveRequestIp()
+    {
+        $remoteAddr = trim((string)($_SERVER['REMOTE_ADDR'] ?? ''));
+        $forwardedFor = trim((string)($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''));
+
+        if ($forwardedFor !== '') {
+            $parts = array_map('trim', explode(',', $forwardedFor));
+            foreach ($parts as $part) {
+                if (filter_var($part, FILTER_VALIDATE_IP)) {
+                    return [$part, $forwardedFor];
+                }
+            }
+        }
+
+        if (filter_var($remoteAddr, FILTER_VALIDATE_IP)) {
+            return [$remoteAddr, $forwardedFor];
+        }
+
+        return ['', $forwardedFor];
+    }
+
+    private function logDispositionHistory($contactRow, $previousDisposition, $newDisposition, $previousNotes, $newNotes)
+    {
+        if (!$this->hasTable('disposition_history')) {
+            return true;
+        }
+
+        $previousDisposition = trim((string)$previousDisposition);
+        $newDisposition = trim((string)$newDisposition);
+        $previousNotes = $this->normalizeNotesForHistory($previousNotes);
+        $newNotes = $this->normalizeNotesForHistory($newNotes);
+
+        if ($previousDisposition === $newDisposition && $previousNotes === $newNotes) {
+            return true;
+        }
+
+        $meta = $this->getCurrentUserMeta();
+        list($ipAddress, $forwardedIp) = $this->resolveRequestIp();
+
+        $companyId = intval($contactRow['company_id'] ?? 0);
+        $campaignId = intval($contactRow['campaignid'] ?? 0);
+        $campaignnumberId = intval($contactRow['id'] ?? 0);
+        $phone = mysqli_real_escape_string($this->conn, (string)($contactRow['phone_e164'] ?? ''));
+        $actionType = ($previousDisposition !== $newDisposition && $previousNotes !== $newNotes)
+            ? 'disposition_and_notes_updated'
+            : (($previousDisposition !== $newDisposition) ? 'disposition_updated' : 'notes_updated');
+
+        $prevDispoSql = $previousDisposition !== '' ? "'" . mysqli_real_escape_string($this->conn, $previousDisposition) . "'" : "NULL";
+        $newDispoSql = $newDisposition !== '' ? "'" . mysqli_real_escape_string($this->conn, $newDisposition) . "'" : "NULL";
+        $prevNotesSql = $previousNotes !== '' ? "'" . mysqli_real_escape_string($this->conn, $previousNotes) . "'" : "NULL";
+        $newNotesSql = $newNotes !== '' ? "'" . mysqli_real_escape_string($this->conn, $newNotes) . "'" : "NULL";
+        $emailSql = $meta['email'] !== '' ? "'" . mysqli_real_escape_string($this->conn, $meta['email']) . "'" : "NULL";
+        $roleSql = $meta['role'] !== '' ? "'" . mysqli_real_escape_string($this->conn, $meta['role']) . "'" : "NULL";
+        $ipSql = $ipAddress !== '' ? "'" . mysqli_real_escape_string($this->conn, $ipAddress) . "'" : "NULL";
+        $forwardedSql = $forwardedIp !== '' ? "'" . mysqli_real_escape_string($this->conn, $forwardedIp) . "'" : "NULL";
+        $phoneSql = $phone !== '' ? "'$phone'" : "NULL";
+        $userIdSql = intval($meta['user_id']) > 0 ? intval($meta['user_id']) : 'NULL';
+
+        $insertColumns = "";
+        $insertValues = "";
+        if (!$this->isAutoIncrementColumn('disposition_history', 'id')) {
+            $historyId = $this->getNextNumericId('disposition_history', 'id');
+            $insertColumns = "id, ";
+            $insertValues = $historyId . ", ";
+        }
+
+        $sql = "INSERT INTO disposition_history (
+                    " . $insertColumns . "company_id, campaign_id, campaignnumber_id, phone_e164, action_type,
+                    previous_disposition, new_disposition, previous_notes, new_notes,
+                    changed_by_user_id, changed_by_email, changed_by_role,
+                    ip_address, forwarded_ip, created_at
+                ) VALUES (
+                    " . $insertValues . "$companyId, " . ($campaignId > 0 ? $campaignId : "NULL") . ", $campaignnumberId, $phoneSql,
+                    '" . mysqli_real_escape_string($this->conn, $actionType) . "',
+                    $prevDispoSql, $newDispoSql, $prevNotesSql, $newNotesSql,
+                    $userIdSql, $emailSql, $roleSql, $ipSql, $forwardedSql, UTC_TIMESTAMP()
+                )";
+
+        return mysqli_query($this->conn, $sql) !== false;
+    }
+
+    private function normalizeTimezone($timezone)
+    {
+        $timezone = trim((string)$timezone);
+        if ($timezone === '') {
+            return 'UTC';
+        }
+
+        try {
+            new DateTimeZone($timezone);
+            return $timezone;
+        } catch (Exception $e) {
+            return 'UTC';
+        }
+    }
+
+    private function getCompanyTimezone($companyId)
+    {
+        $companyId = intval($companyId);
+        if ($companyId <= 0 || !$this->hasTable('pbxdetail') || !$this->hasColumn('pbxdetail', 'timezone')) {
+            return 'UTC';
+        }
+
+        $query = mysqli_query($this->conn, "SELECT timezone FROM pbxdetail WHERE company_id = $companyId LIMIT 1");
+        if ($query && mysqli_num_rows($query) > 0) {
+            $row = mysqli_fetch_assoc($query);
+            return $this->normalizeTimezone($row['timezone'] ?? 'UTC');
+        }
+
+        return 'UTC';
+    }
+
+    private function getUtcDayRangeForCompany($companyId)
+    {
+        $timezoneName = $this->getCompanyTimezone($companyId);
+        $localTimezone = new DateTimeZone($timezoneName);
+        $utcTimezone = new DateTimeZone('UTC');
+        $startLocal = new DateTime('today', $localTimezone);
+        $endLocal = clone $startLocal;
+        $endLocal->setTime(23, 59, 59);
+        $startLocal->setTime(0, 0, 0);
+
+        $startUtc = clone $startLocal;
+        $endUtc = clone $endLocal;
+        $startUtc->setTimezone($utcTimezone);
+        $endUtc->setTimezone($utcTimezone);
+
+        return [
+            'start' => $startUtc->format('Y-m-d H:i:s'),
+            'end' => $endUtc->format('Y-m-d H:i:s')
+        ];
+    }
+
+    private function resolveCampaignCompanyId($campaignId)
+    {
+        $campaignId = intval($campaignId);
+        if ($campaignId <= 0) {
+            return 0;
+        }
+
+        $query = mysqli_query($this->conn, "SELECT company_id FROM campaign WHERE id = $campaignId LIMIT 1");
+        if ($query && mysqli_num_rows($query) > 0) {
+            $row = mysqli_fetch_assoc($query);
+            return intval($row['company_id'] ?? 0);
+        }
+
+        return 0;
+    }
+
+    private function resolveScheduledDateTime($callbackDate, $callbackTime, $companyId = 0)
+    {
+        $callbackDate = trim((string)$callbackDate);
+        $callbackTime = trim((string)$callbackTime);
+        $companyTimezone = $this->getCompanyTimezone($companyId);
+        $localTimezone = new DateTimeZone($companyTimezone);
+        $utcTimezone = new DateTimeZone('UTC');
+
+        if ($callbackDate !== '' && $callbackTime !== '') {
+            try {
+                $scheduledLocal = new DateTime($callbackDate . ' ' . $callbackTime, $localTimezone);
+                $scheduledLocal->setTimezone($utcTimezone);
+                return $scheduledLocal->format('Y-m-d H:i:s');
+            } catch (Exception $e) {
+            }
+        }
+
+        $fallbackLocal = new DateTime('now', $localTimezone);
+        $fallbackLocal->modify('+1 hour');
+        $fallbackLocal->setTimezone($utcTimezone);
+        return $fallbackLocal->format('Y-m-d H:i:s');
     }
 
     private function cancelPendingScheduledCalls($companyId, $campaignnumberId, $updatedBy = 0)
@@ -55,12 +295,7 @@ Class Campcontact_modal{
 
         $companyId = intval($companyId);
         $campaignnumberId = intval($campaignnumberId);
-        $updatedExpr = intval($updatedBy) > 0 ? intval($updatedBy) : 'NULL';
-
-        $sql = "UPDATE scheduled_calls
-                SET status = 'cancelled',
-                    cancelled_at = NOW(),
-                    updated_by = $updatedExpr
+        $sql = "DELETE FROM scheduled_calls
                 WHERE company_id = $companyId
                   AND campaignnumber_id = $campaignnumberId
                   AND status IN ('pending_agent', 'pending', 'queued', 'scheduled')";
@@ -88,7 +323,7 @@ Class Campcontact_modal{
             }
         }
 
-        $timezone = trim((string)($_SESSION['timezone'] ?? date_default_timezone_get()));
+        $timezone = $this->getCompanyTimezone($companyId);
         $contactName = trim(((string)($contactRow['first_name'] ?? '')) . ' ' . ((string)($contactRow['last_name'] ?? '')));
         $meta = [
             'action_type' => strtoupper((string)$actionType),
@@ -222,9 +457,11 @@ Class Campcontact_modal{
         return "";
     }
 	
-	public function deletecontacts()
+    public function deletecontacts()
 	{
-	    $sql = "DELETE FROM campaignnumbers WHERE DATE(iserttime) = CURDATE()";
+        $companyId = intval($_SESSION['company_id'] ?? 0);
+        $range = $this->getUtcDayRangeForCompany($companyId);
+	    $sql = "DELETE FROM campaignnumbers WHERE created_at >= '{$range['start']}' AND created_at <= '{$range['end']}'";
         if (mysqli_query($this->conn, $sql)) {
             echo "success";
         } else {
@@ -372,9 +609,6 @@ Class Campcontact_modal{
 	
     public function getallcontact($company_id = null, $campaign_id = 0, $filter_type = '', $filter_value = '', $open_contact_id = 0) {
          $where = "WHERE 1=1";
-         if($company_id !== null) {
-             $where .= " AND c.company_id = $company_id";
-         }
 
          $campaign_id = intval($campaign_id);
          if ($campaign_id > 0) {
@@ -382,8 +616,20 @@ Class Campcontact_modal{
          } else {
              return json_encode([]);
          }
+
+         $company_id = ($company_id === null) ? null : intval($company_id);
+         if ($company_id <= 0) {
+             $company_id = $this->resolveCampaignCompanyId($campaign_id);
+         }
+         if ($company_id <= 0) {
+             $company_id = intval($_SESSION['company_id'] ?? 0);
+         }
+         if ($company_id > 0) {
+             $where .= " AND c.company_id = $company_id";
+         }
          
          $where .= $this->buildAgentScopeWhere('c', true);
+         $where .= " AND c.state = 'READY'";
 
          $filter_type = strtolower(trim((string)$filter_type));
          if ($filter_type !== '' && $filter_value !== '') {
@@ -403,42 +649,27 @@ Class Campcontact_modal{
          }
 
          $open_contact_id = intval($open_contact_id);
-         if ($open_contact_id > 0) {
-             $where .= " AND (
-                            c.id = $open_contact_id
-                            OR DATE(c.created_at) = CURDATE()
-                            OR (
-                                c.next_call_at IS NOT NULL
-                                AND DATE(c.next_call_at) = CURDATE()
-                            )
-                          )";
-         } else {
-             $where .= " AND (
-                            DATE(c.created_at) = CURDATE()
-                            OR (
-                                c.next_call_at IS NOT NULL
-                                AND DATE(c.next_call_at) = CURDATE()
-                            )
-                          )";
-         }
+         $dayRange = $this->getUtcDayRangeForCompany($company_id > 0 ? $company_id : intval($_SESSION['company_id'] ?? 0));
+         $where .= " AND c.created_at >= '{$dayRange['start']}' AND c.created_at <= '{$dayRange['end']}'";
+         $where .= " AND c.next_call_at IS NOT NULL";
+         $where .= " AND c.next_call_at >= '{$dayRange['start']}' AND c.next_call_at <= '{$dayRange['end']}'";
 
          // New Schema Query
          $query = "SELECT c.id, c.phone_e164, c.first_name, c.last_name, 
                      c.state, c.attempts_used, c.max_attempts,
                      c.last_call_status, c.last_call_started_at,
                      c.agent_connected, c.notes, c.last_disposition,
-                     c.next_call_at,
+                     c.next_call_at, p.timezone,
 					 a.agent_name, d.color_code
               FROM campaignnumbers c
               LEFT JOIN agent a ON c.agent_connected = a.agent_id
+              LEFT JOIN pbxdetail p ON p.company_id = c.company_id
               LEFT JOIN dialer_disposition_master d ON c.last_disposition = d.label AND c.company_id = d.company_id
 			  $where
               ORDER BY 
                   CASE 
                       WHEN c.id = $open_contact_id AND $open_contact_id > 0 THEN 0
-                      WHEN c.next_call_at IS NOT NULL AND DATE(c.next_call_at) = CURDATE() THEN 1
-                      WHEN DATE(c.created_at) = CURDATE() THEN 2
-                      ELSE 3
+                      ELSE 1
                   END,
                   COALESCE(c.next_call_at, c.created_at) ASC,
                   c.id DESC
@@ -471,7 +702,8 @@ Class Campcontact_modal{
                 'disposition' => $row['last_disposition'],
                 'color_code'  => $row['color_code'] ?? '#808080',
                 'notes'       => $row['notes'],
-                'next_call_at'=> $row['next_call_at']
+                'next_call_at'=> $row['next_call_at'],
+                'timezone'    => $row['timezone'] ?? 'UTC'
             ];
         }
 
@@ -575,7 +807,7 @@ Class Campcontact_modal{
                 // DNC Check
                 $isDnc = 0;
                 $state = 'READY';
-                $nextCallAt = "NOW()";
+                $nextCallAt = "UTC_TIMESTAMP()";
                 
                 // Check if in DNC
                 $dncCheck = "SELECT id FROM dialer_dnc WHERE phone_raw='$phone' AND company_id='$companyId' LIMIT 1";
@@ -590,7 +822,7 @@ Class Campcontact_modal{
                           (company_id, campaignid, phone_e164, phone_raw, first_name, last_name, state, max_attempts, is_dnc, next_call_at)
                           VALUES 
                           ('$companyId', '$campaignId', '$phone', '$phone', '$fname', '$lname', '$state', '$maxAttempts', '$isDnc', $nextCallAt)
-                          ON DUPLICATE KEY UPDATE updated_at=NOW()"; 
+                          ON DUPLICATE KEY UPDATE updated_at=UTC_TIMESTAMP()"; 
 
                 if (mysqli_query($this->conn, $query)) {
                     $insertCount++;
@@ -625,7 +857,7 @@ Class Campcontact_modal{
 	
 
 	
-	public function updateDispositionSql($id, $disposition, $notes, $callbackDate, $callbackTime) {
+    public function updateDispositionSql($id, $disposition, $notes, $callbackDate, $callbackTime) {
         $id = intval($id);
         $rawDisposition = trim((string)$disposition);
         $rawNotes = trim((string)$notes);
@@ -635,7 +867,7 @@ Class Campcontact_modal{
         }
 
         $safeDisposition = mysqli_real_escape_string($this->conn, $rawDisposition);
-        $contactQuery = mysqli_query($this->conn, "SELECT id, notes, company_id, campaignid, agent_connected, phone_e164, first_name, last_name FROM campaignnumbers WHERE id='$id' LIMIT 1");
+        $contactQuery = mysqli_query($this->conn, "SELECT id, notes, last_disposition, company_id, campaignid, agent_connected, phone_e164, first_name, last_name FROM campaignnumbers WHERE id='$id' LIMIT 1");
         if (!$contactQuery || mysqli_num_rows($contactQuery) === 0) {
             return ['success' => false, 'error' => 'Contact not found'];
         }
@@ -654,7 +886,7 @@ Class Campcontact_modal{
 
         if ($actionType === 'callback' || $actionType === 'retry') {
             $state = 'SCHEDULED';
-            $scheduledFor = $this->resolveScheduledDateTime($callbackDate, $callbackTime);
+            $scheduledFor = $this->resolveScheduledDateTime($callbackDate, $callbackTime, intval($cnRow['company_id'] ?? 0));
             $nextCallAt = "'" . mysqli_real_escape_string($this->conn, $scheduledFor) . "'";
         } else if ($actionType === 'global_dnc' || $actionType === 'dnc') {
             $state = 'DNC';
@@ -672,9 +904,12 @@ Class Campcontact_modal{
             }
         }
 
+        $previousDisposition = (string)($cnRow['last_disposition'] ?? '');
+        $previousNotesRaw = (string)($cnRow['notes'] ?? '');
+        $newNotesRaw = $previousNotesRaw;
         $notesUpdate = '';
         if ($rawNotes !== '') {
-            $timestamp = date('Y-m-d H:i');
+            $timestamp = gmdate('Y-m-d H:i');
             $existingNotes = [];
             $decoded = json_decode((string)($cnRow['notes'] ?? ''), true);
 
@@ -698,6 +933,7 @@ Class Campcontact_modal{
             if ($jsonString === false) {
                 $jsonString = '[]';
             }
+            $newNotesRaw = $jsonString;
             $jsonNotes = mysqli_real_escape_string($this->conn, $jsonString);
             $notesUpdate = ", notes = '$jsonNotes'";
         }
@@ -710,10 +946,14 @@ Class Campcontact_modal{
                               state='$state', 
                               next_call_at=$nextCallAt 
                               $notesUpdate,
-                              last_call_ended_at=NOW()
+                              last_call_ended_at=UTC_TIMESTAMP()
                           WHERE id='$id'";
 
             if (!mysqli_query($this->conn, $updateSql)) {
+                throw new Exception(mysqli_error($this->conn));
+            }
+
+            if (!$this->logDispositionHistory($cnRow, $previousDisposition, $rawDisposition, $previousNotesRaw, $newNotesRaw)) {
                 throw new Exception(mysqli_error($this->conn));
             }
 
@@ -728,7 +968,7 @@ Class Campcontact_modal{
                      call_status = 'MANUAL_DISPO',
                      disposition = '$safeDisposition',
                      notes = '$logNotes',
-                     started_at = NOW()";
+                     started_at = UTC_TIMESTAMP()";
             if (!mysqli_query($this->conn, $logQ)) {
                 error_log('Dial disposition log insert failed: ' . mysqli_error($this->conn));
             }
@@ -750,6 +990,42 @@ Class Campcontact_modal{
             mysqli_rollback($this->conn);
             return ['success' => false, 'error' => $e->getMessage()];
         }
+    }
+
+    public function getDispositionHistory($campaignnumberId = 0, $company_id = null)
+    {
+        $campaignnumberId = intval($campaignnumberId);
+        if ($campaignnumberId <= 0 || !$this->hasTable('disposition_history')) {
+            return [];
+        }
+
+        $where = "WHERE dh.campaignnumber_id = $campaignnumberId";
+        if ($company_id !== null) {
+            $company_id = intval($company_id);
+            if ($company_id > 0) {
+                $where .= " AND dh.company_id = $company_id";
+            }
+        }
+
+        $sql = "SELECT dh.id, dh.company_id, dh.campaign_id, dh.campaignnumber_id, dh.phone_e164,
+                       dh.action_type, dh.previous_disposition, dh.new_disposition,
+                       dh.previous_notes, dh.new_notes, dh.changed_by_user_id,
+                       dh.changed_by_email, dh.changed_by_role, dh.created_at,
+                       p.timezone
+                FROM disposition_history dh
+                LEFT JOIN pbxdetail p ON p.company_id = dh.company_id
+                $where
+                ORDER BY dh.created_at DESC, dh.id DESC";
+
+        $result = mysqli_query($this->conn, $sql);
+        $data = [];
+        if ($result) {
+            while ($row = mysqli_fetch_assoc($result)) {
+                $data[] = $row;
+            }
+        }
+
+        return $data;
     }
 
 	
