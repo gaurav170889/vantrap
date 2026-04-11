@@ -27,13 +27,18 @@ function dashboardClockDuration($seconds) {
 	return sprintf('%02d:%02d:%02d', $hours, $minutes, $secs);
 }
 
-function dashboardDisplayDateTime($value) {
+function dashboardDisplayDateTime($value, $timezone = 'UTC') {
 	$value = trim((string)$value);
 	if ($value === '' || $value === '0000-00-00 00:00:00') {
 		return '';
 	}
-	$timestamp = strtotime($value);
-	return $timestamp ? date('M d, Y h:i A', $timestamp) : $value;
+	try {
+		$dt = new DateTime($value, new DateTimeZone('UTC'));
+		$dt->setTimezone(new DateTimeZone($timezone ?: 'UTC'));
+		return $dt->format('M d, Y h:i A');
+	} catch (Exception $e) {
+		return $value;
+	}
 }
 
 $outbound = $dashboard['outbound'];
@@ -58,8 +63,9 @@ foreach ($ratingAgents as $agentRow) {
 }
 
 $statusTotal = count($outbound['status_breakdown'] ?? []);
-$latestOutboundText = dashboardDisplayDateTime($outbound['latest_recorded_at'] ?? '');
-$latestRatingText = dashboardDisplayDateTime($ratings['latest_recorded_at'] ?? '');
+$dashboardTimezone = $dashboard['period']['timezone'] ?? 'UTC';
+$latestOutboundText = dashboardDisplayDateTime($outbound['latest_recorded_at'] ?? '', $dashboardTimezone);
+$latestRatingText = dashboardDisplayDateTime($ratings['latest_recorded_at'] ?? '', $dashboardTimezone);
 ?>
 
 <div id="dashboard-period-range" style="display:none;"><?php echo htmlspecialchars($dashboard['period']['label']); ?> (<?php echo htmlspecialchars($dashboard['period']['display']); ?>)</div>
